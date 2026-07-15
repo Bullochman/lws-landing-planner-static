@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>LWS Landing Planner · 랜딩 플래너 · R5TOOLS.IO</title>
+  <meta name="description" content="Season-2 Day-1 teleport coordinator for Last War: Survival alliances. Assign every member a specific landing tile around your Alliance Furnace anchor. Free for Warzone 2007." />
+  <link rel="stylesheet" href="static/styles.css" />
+  <!-- KR font (system fallback covers it, but Noto Sans KR looks better on Windows) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="wrap">
+
+    <!-- ============ HEADER ============ -->
+    <header class="app-header">
+      <div>
+        <span class="brand" data-i18n="brand">R5TOOLS.IO</span>
+        <span class="brand-sub" data-i18n="brandSub">LWS Suite</span>
+        <span class="brand-tool" data-i18n="toolName">Landing Planner</span>
+      </div>
+      <button type="button" class="lang-toggle" id="langToggle" data-i18n="langToggle">한국어</button>
+    </header>
+
+    <!-- ============ MAIN APP (gated by LWSAccessCodes) ============ -->
+    <div id="main-app">
+
+      <!-- Anchor input -->
+      <section class="card" aria-labelledby="anchor-heading">
+        <h2 id="anchor-heading" data-i18n="anchorHeading">Day-1 Anchor</h2>
+        <p class="card-sub" data-i18n="anchorSub">Where the Alliance Furnace will be placed. Corner tiles (-15 °C) are safest; every band inward drops ~15 °C.</p>
+
+        <form id="anchor-form">
+          <div class="field-row">
+            <div class="field">
+              <label for="anchor-x" data-i18n="anchorXLabel">Anchor X (0–1200)</label>
+              <input type="number" id="anchor-x" min="0" max="1200" step="1" value="486" required />
+            </div>
+            <div class="field">
+              <label for="anchor-y" data-i18n="anchorYLabel">Anchor Y (0–1200)</label>
+              <input type="number" id="anchor-y" min="0" max="1200" step="1" value="432" required />
+            </div>
+            <div class="field">
+              <label for="furnace-level" data-i18n="furnaceLevelLabel">Alliance Furnace level (1–20)</label>
+              <input type="number" id="furnace-level" min="1" max="20" step="1" value="1" required />
+            </div>
+          </div>
+          <div class="field">
+            <label for="warzone" data-i18n="warzoneLabel">Warzone / server (optional)</label>
+            <input type="text" id="warzone" placeholder="2007" />
+          </div>
+        </form>
+
+        <div class="anchor-summary" id="anchor-summary">
+          <div class="metric">
+            <span class="metric-label" data-i18n="metricAmbient">Ambient temp</span>
+            <span class="metric-value" id="metric-ambient">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label" data-i18n="metricFurnaceBonus">Furnace bonus</span>
+            <span class="metric-value" id="metric-furnace">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label" data-i18n="metricEffective">Inside-radius temp</span>
+            <span class="metric-value" id="metric-effective">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label" data-i18n="metricMembers">Members placed</span>
+            <span class="metric-value" id="metric-members">0</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Roster upload -->
+      <section class="card" aria-labelledby="roster-heading">
+        <h2 id="roster-heading" data-i18n="rosterHeading">Alliance Roster</h2>
+        <p class="card-sub" data-i18n="rosterSub">Upload CSV (columns: name, rank, hq_level, power, notes). Same format as the Hive Grid Manager — one CSV works across every LWS tool.</p>
+
+        <div class="actions">
+          <input type="file" id="csv-input" accept=".csv,text/csv" style="display:none" />
+          <button type="button" class="btn secondary" id="upload-btn" data-i18n="rosterUploadBtn">Upload CSV</button>
+          <button type="button" class="btn ghost" id="sample-btn" data-i18n="rosterLoadSample">Load sample roster</button>
+          <span class="anchor-summary" style="padding:0;align-self:center">
+            <span class="metric-value" id="roster-count-value" style="font-family:var(--mono);font-size:14px;">0</span>
+            <span class="metric-label" data-i18n="rosterCount" style="align-self:center;margin-left:6px">members loaded</span>
+          </span>
+        </div>
+      </section>
+
+      <!-- Assignments -->
+      <section class="card" aria-labelledby="assign-heading">
+        <h2 id="assign-heading" data-i18n="assignHeading">Landing Assignments</h2>
+        <p class="card-sub" data-i18n="assignSub">Highest-rank / highest-power members go inside the Alliance Furnace heat radius. R1–R2 spread outward on the defensive ring.</p>
+
+        <div class="actions" style="margin-bottom:var(--sp-4)">
+          <button type="button" class="btn" id="assign-btn" data-i18n="assignBtn">Assign landing tiles</button>
+        </div>
+
+        <div id="warnings-container"></div>
+
+        <div style="overflow:auto">
+          <table class="assign-table" id="assign-table">
+            <thead>
+              <tr>
+                <th data-i18n="colName">Name</th>
+                <th data-i18n="colRank">Rank</th>
+                <th data-i18n="colHQ">HQ</th>
+                <th data-i18n="colPower">Power</th>
+                <th data-i18n="colCoord">Coord (X, Y)</th>
+                <th data-i18n="colDelta">Δ from anchor</th>
+                <th data-i18n="colRing">Ring</th>
+                <th data-i18n="colTemp">Tile °C</th>
+                <th data-i18n="colRisk">Freeze risk</th>
+              </tr>
+            </thead>
+            <tbody id="assign-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Preview + export -->
+      <section class="card" aria-labelledby="preview-heading">
+        <h2 id="preview-heading" data-i18n="previewHeading">Landing Preview</h2>
+        <p class="card-sub" data-i18n="previewSub">Visual layout of the assigned tiles around the anchor. Discord-ready PNG export ships in v1.1.</p>
+
+        <div class="preview-wrap">
+          <canvas id="preview-canvas" width="720" height="720"></canvas>
+        </div>
+
+        <div class="actions">
+          <button type="button" class="btn" id="export-png-btn" data-i18n="exportPngBtn">Export PNG (Discord)</button>
+          <button type="button" class="btn secondary" id="export-csv-btn" data-i18n="exportCsvBtn">Export CSV</button>
+          <button type="button" class="btn secondary" id="export-json-btn" data-i18n="exportJsonBtn">Export JSON</button>
+          <button type="button" class="btn ghost" id="export-share-btn" data-i18n="exportShareBtn">Copy Discord share block</button>
+        </div>
+      </section>
+
+    </div>
+    <!-- /#main-app -->
+
+    <!-- ============ FOOTER ============ -->
+    <footer class="app-footer">
+      <a href="https://r5tools.io" target="_blank" rel="noopener" data-i18n="footerBackLink">All tools · r5tools.io</a>
+      · <span data-i18n="footerCred">Powered by the LWS Knowledge Base</span>
+    </footer>
+  </div>
+
+  <!-- ============ Access Codes gate (real, not stubbed) ============ -->
+  <!-- If no valid lws_unlock_code cookie, LWSAccessCodes.gate('main-app') wraps
+       #main-app in a locked overlay and redirects to access-codes.r5tools.io/unlock. -->
+  <script src="https://access-codes.r5tools.io/lib.js" defer></script>
+
+  <!-- ============ i18n dictionary ============ -->
+  <script src="static/fake-server.js"></script>
+    <script src="static/i18n.js" defer></script>
+
+  <!-- ============ App logic ============ -->
+  <script defer>
+    (function () {
+      'use strict';
+
+      // ---- boot ----
+      document.addEventListener('DOMContentLoaded', function () {
+        // Auth gate — best-effort, no-op if lib didn't load (e.g. offline dev).
+        if (window.LWSAccessCodes && typeof window.LWSAccessCodes.gate === 'function') {
+          try { window.LWSAccessCodes.gate('main-app'); } catch (e) { /* silent */ }
+        }
+
+        // Apply i18n on first render
+        if (window.LWSi18n) window.LWSi18n.apply();
+
+        // Language toggle
+        document.getElementById('langToggle').addEventListener('click', function () {
+          if (window.LWSi18n) {
+            window.LWSi18n.toggle();
+            // Re-render dynamic content (assignments table + summary) in new lang
+            renderAssignments(state.lastResult);
+          }
+        });
+
+        wireForm();
+      });
+
+      // ---- state ----
+      var state = {
+        roster: [],
+        lastResult: null,
+      };
+
+      // ---- CSV parser (tiny; handles quoted fields, commas inside quotes) ----
+      function parseCSV(text) {
+        var rows = [];
+        var i = 0, cur = '', inQ = false, row = [];
+        while (i < text.length) {
+          var c = text[i];
+          if (inQ) {
+            if (c === '"' && text[i + 1] === '"') { cur += '"'; i += 2; continue; }
+            if (c === '"') { inQ = false; i++; continue; }
+            cur += c; i++; continue;
+          }
+          if (c === '"') { inQ = true; i++; continue; }
+          if (c === ',') { row.push(cur); cur = ''; i++; continue; }
+          if (c === '\n' || c === '\r') {
+            if (cur || row.length) { row.push(cur); rows.push(row); }
+            cur = ''; row = [];
+            if (c === '\r' && text[i + 1] === '\n') i++;
+            i++; continue;
+          }
+          cur += c; i++;
+        }
+        if (cur || row.length) { row.push(cur); rows.push(row); }
+        if (rows.length === 0) return [];
+        var header = rows[0].map(function (h) { return h.trim().toLowerCase(); });
+        return rows.slice(1).filter(function (r) { return r.length && r.some(Boolean); }).map(function (r) {
+          var obj = {};
+          header.forEach(function (h, idx) { obj[h] = (r[idx] || '').trim(); });
+          return obj;
+        });
+      }
+
+      // ---- roster wiring ----
+      function loadRoster(rows) {
+        state.roster = rows;
+        document.getElementById('roster-count-value').textContent = rows.length;
+        document.getElementById('metric-members').textContent = rows.length;
+      }
+
+      function wireForm() {
+        var uploadBtn = document.getElementById('upload-btn');
+        var fileInput = document.getElementById('csv-input');
+        uploadBtn.addEventListener('click', function () { fileInput.click(); });
+        fileInput.addEventListener('change', function () {
+          var file = fileInput.files && fileInput.files[0];
+          if (!file) return;
+          var reader = new FileReader();
+          reader.onload = function () {
+            try {
+              loadRoster(parseCSV(reader.result));
+            } catch (e) {
+              alert('CSV parse error: ' + e.message);
+            }
+          };
+          reader.readAsText(file);
+        });
+
+        document.getElementById('sample-btn').addEventListener('click', function () {
+          fetch("data/example-roster.csv"))
+            .then(function (r) { return r.text(); })
+            .then(function (t) { loadRoster(parseCSV(t)); })
+            .catch(function () { alert('Sample roster not available.'); });
+        });
+
+        // Recompute the anchor summary on any anchor input change
+        ['anchor-x', 'anchor-y', 'furnace-level'].forEach(function (id) {
+          document.getElementById(id).addEventListener('input', updateAnchorSummary);
+        });
+        updateAnchorSummary();
+
+        document.getElementById('assign-btn').addEventListener('click', runAssign);
+
+        document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
+        document.getElementById('export-json-btn').addEventListener('click', exportJSON);
+        document.getElementById('export-share-btn').addEventListener('click', exportShareBlock);
+        document.getElementById('export-png-btn').addEventListener('click', function () {
+          // v1: canvas render is the preview; downloading uses toDataURL.
+          var canvas = document.getElementById('preview-canvas');
+          var url = canvas.toDataURL('image/png');
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'landing-plan.png';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        });
+      }
+
+      // ---- anchor summary (client-side mirror of server logic) ----
+      function ambientFor(x, y) {
+        var zones = [-15, -30, -40, -50, -60, -70, -80];
+        var cx = 600, cy = 600, maxD = 600;
+        var d = Math.max(Math.abs(x - cx), Math.abs(y - cy));
+        var idx = Math.min(6, Math.max(0, Math.round((1 - d / maxD) * 6)));
+        return zones[idx];
+      }
+      function furnaceHeat(lvl) {
+        lvl = Math.max(1, Math.min(20, Number(lvl) || 1));
+        if (lvl === 1) return 3;
+        if (lvl === 20) return 12.5;
+        return Math.round((3 + (12.5 - 3) / 19 * (lvl - 1)) * 100) / 100;
+      }
+      function updateAnchorSummary() {
+        var x = Number(document.getElementById('anchor-x').value);
+        var y = Number(document.getElementById('anchor-y').value);
+        var lvl = Number(document.getElementById('furnace-level').value);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        var amb = ambientFor(x, y);
+        var bonus = furnaceHeat(lvl);
+        var eff = amb + bonus;
+        document.getElementById('metric-ambient').textContent = amb + ' °C';
+        document.getElementById('metric-furnace').textContent = '+' + bonus + ' °C';
+        var effEl = document.getElementById('metric-effective');
+        effEl.textContent = eff + ' °C';
+        effEl.className = 'metric-value ' + (eff > -20 ? 'freeze-safe' : (eff > -30 ? 'freeze-warn' : 'freeze-danger'));
+      }
+
+      // ---- assign ----
+      function runAssign() {
+        if (!state.roster.length) {
+          alert(window.LWSi18n ? window.LWSi18n.t('warnNoRoster') : 'Upload a roster CSV first.');
+          return;
+        }
+        var body = {
+          anchor: {
+            x: Number(document.getElementById('anchor-x').value),
+            y: Number(document.getElementById('anchor-y').value),
+          },
+          furnace_level: Number(document.getElementById('furnace-level').value),
+          roster: state.roster,
+        };
+        fetch('/api/assign', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.error) { alert('Assign error: ' + data.error); return; }
+            state.lastResult = data;
+            renderAssignments(data);
+            renderPreview(data);
+          })
+          .catch(function (e) { alert('Network error: ' + e.message); });
+      }
+
+      // ---- render ----
+      function renderAssignments(data) {
+        var tbody = document.getElementById('assign-tbody');
+        var warnings = document.getElementById('warnings-container');
+        tbody.innerHTML = '';
+        warnings.innerHTML = '';
+        if (!data) return;
+        var t = window.LWSi18n ? window.LWSi18n.t.bind(window.LWSi18n) : function (k) { return k; };
+
+        if (data.warnings && data.warnings.length) {
+          data.warnings.forEach(function (w) {
+            var el = document.createElement('div');
+            el.className = 'warnings';
+            el.innerHTML = '<div class="warn-title">' + t('warnTitle') + '</div>' + escapeHtml(w);
+            warnings.appendChild(el);
+          });
+        }
+
+        var riskLabel = { safe: t('riskSafe'), warning: t('riskWarn'), danger: t('riskDanger') };
+        data.assignments.forEach(function (a) {
+          var tr = document.createElement('tr');
+          var rankKey = 'rank-' + (a.rank || 'R1');
+          tr.innerHTML =
+            '<td>' + escapeHtml(a.name) + '</td>' +
+            '<td><span class="pill ' + rankKey + '">' + escapeHtml(a.rank) + '</span></td>' +
+            '<td>' + escapeHtml(String(a.hq_level || '')) + '</td>' +
+            '<td>' + fmtNum(a.power) + '</td>' +
+            '<td>(' + a.assigned_x + ', ' + a.assigned_y + ')</td>' +
+            '<td>Δ(' + a.delta_x + ', ' + a.delta_y + ')</td>' +
+            '<td>' + a.ring + '</td>' +
+            '<td>' + a.tile_temp_with_furnace_c + '°</td>' +
+            '<td><span class="pill freeze-' + a.freeze_risk + '">' + (riskLabel[a.freeze_risk] || a.freeze_risk) + '</span></td>';
+          tbody.appendChild(tr);
+        });
+      }
+
+      function renderPreview(data) {
+        var canvas = document.getElementById('preview-canvas');
+        var ctx = canvas.getContext('2d');
+        var W = canvas.width, H = canvas.height;
+        ctx.fillStyle = '#0a0e1a';   // shared bg from LWS palette
+        ctx.fillRect(0, 0, W, H);
+        if (!data) return;
+
+        // ---- Branded header ----
+        ctx.fillStyle = '#0d1424';
+        ctx.fillRect(0, 0, W, 44);
+        ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, 44); ctx.lineTo(W, 44); ctx.stroke();
+        ctx.fillStyle = '#c9a961';
+        ctx.font = '600 11px system-ui, -apple-system, sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillText('R5TOOLS.IO · LANDING PLANNER', 12, 22);
+        ctx.fillStyle = '#a8b0c0';
+        ctx.font = '400 10px system-ui, sans-serif';
+        ctx.textAlign = 'right';
+        var risky = data.assignments.filter(function (a) { return a.freeze_risk !== 'safe'; }).length;
+        ctx.fillText(
+          data.assignments.length + ' members · ' + (risky === 0 ? 'all safe' : risky + ' at risk'),
+          W - 12, 22
+        );
+
+        // Reserved footer height for legend + branding
+        var footerH = 60;
+
+        // Fit the delta range into the canvas with padding (accounting for header/footer)
+        var pad = 40;
+        var maxAbs = 30;
+        data.assignments.forEach(function (a) {
+          maxAbs = Math.max(maxAbs, Math.abs(a.delta_x), Math.abs(a.delta_y));
+        });
+        var mapY = 44, mapH = H - 44 - footerH;
+        var scale = (Math.min(W, mapH) / 2 - pad) / (maxAbs + 4);
+        var cx = W / 2, cy = mapY + mapH / 2;
+
+        // Furnace radius ring
+        ctx.strokeStyle = 'rgba(201, 169, 97, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, data.furnace_radius_tiles * scale, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Anchor marker
+        ctx.fillStyle = '#c9a961';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#7a8290';
+        ctx.font = '11px ui-monospace, monospace';
+        ctx.textBaseline = 'alphabetic';
+        ctx.textAlign = 'center';
+        ctx.fillText('(' + data.anchor.x + ', ' + data.anchor.y + ')', cx, cy + 20);
+
+        // Members with small labels
+        var rankColor = {
+          R5: '#da8fff', R4: '#ffd07a', R3: '#00bfff', R2: '#44dd66', R1: '#6699ff'
+        };
+        data.assignments.forEach(function (a) {
+          var px = cx + a.delta_x * scale;
+          var py = cy + a.delta_y * scale;
+          var color = rankColor[a.rank] || '#a8b0c0';
+          if (a.freeze_risk === 'danger') color = '#e08a8a';
+          else if (a.freeze_risk === 'warning') color = '#e0c080';
+          // Marker: slightly larger for R5/R4 (rally leaders)
+          var s = (a.rank === 'R5' || a.rank === 'R4') ? 8 : 6;
+          ctx.fillStyle = color;
+          ctx.fillRect(px - s / 2, py - s / 2, s, s);
+          // Small name label — only if member has enough room (avoid crowding)
+          if (data.assignments.length <= 30) {
+            ctx.fillStyle = '#a8b0c0';
+            ctx.font = '9px ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            var name = (a.name || '').slice(0, 8);
+            ctx.fillText(name, px, py + s / 2 + 2);
+          }
+        });
+
+        // ---- Legend + footer ----
+        var legY = H - footerH + 8;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        var legendItems = [
+          { color: '#da8fff', label: 'R5' },
+          { color: '#ffd07a', label: 'R4' },
+          { color: '#00bfff', label: 'R3' },
+          { color: '#44dd66', label: 'R2' },
+          { color: '#6699ff', label: 'R1' },
+          { color: '#e0c080', label: 'warning' },
+          { color: '#e08a8a', label: 'danger' },
+        ];
+        var legX = 12;
+        ctx.font = '10px ui-monospace, monospace';
+        legendItems.forEach(function (item) {
+          ctx.fillStyle = item.color;
+          ctx.fillRect(legX, legY - 4, 8, 8);
+          ctx.fillStyle = '#a8b0c0';
+          ctx.fillText(item.label, legX + 12, legY);
+          legX += 12 + ctx.measureText(item.label).width + 14;
+        });
+
+        // Anchor + ambient info + timestamp
+        ctx.fillStyle = '#7a8290';
+        ctx.font = '10px ui-monospace, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(
+          'anchor (' + data.anchor.x + ', ' + data.anchor.y + ')  ambient ' + data.anchor.ambient_c + '°C  · Furnace radius ' + data.furnace_radius_tiles + ' tiles',
+          12, H - 26
+        );
+        ctx.textAlign = 'right';
+        ctx.fillText('r5tools.io · ' + new Date().toISOString().slice(0, 10), W - 12, H - 26);
+        ctx.textBaseline = 'alphabetic';
+      }
+
+      // ---- exports ----
+      function exportCSV() {
+        if (!state.lastResult) return;
+        var rows = [['name','rank','hq_level','power','assigned_x','assigned_y','delta_x','delta_y','ring','tile_temp_c','freeze_risk']];
+        state.lastResult.assignments.forEach(function (a) {
+          rows.push([a.name, a.rank, a.hq_level, a.power, a.assigned_x, a.assigned_y, a.delta_x, a.delta_y, a.ring, a.tile_temp_with_furnace_c, a.freeze_risk]);
+        });
+        var csv = rows.map(function (r) {
+          return r.map(function (v) {
+            v = String(v == null ? '' : v);
+            return /[,"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+          }).join(',');
+        }).join('\n');
+        download('landing-plan.csv', csv, 'text/csv');
+      }
+      function exportJSON() {
+        if (!state.lastResult) return;
+        download('landing-plan.json', JSON.stringify(state.lastResult, null, 2), 'application/json');
+      }
+      function exportShareBlock() {
+        if (!state.lastResult) return;
+        var lines = state.lastResult.assignments.map(function (a) {
+          return a.name + ' → (' + a.assigned_x + ', ' + a.assigned_y + ') · Ring ' + a.ring + ' · ' + a.freeze_risk;
+        });
+        var text = 'Landing plan · anchor (' + state.lastResult.anchor.x + ', ' + state.lastResult.anchor.y + ')\n' + lines.join('\n');
+        navigator.clipboard.writeText(text).then(function () {
+          alert('Copied to clipboard.');
+        }, function () {
+          alert(text);
+        });
+      }
+      function download(name, content, mime) {
+        var blob = new Blob([content], { type: mime });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      // ---- utils ----
+      function escapeHtml(s) {
+        return String(s == null ? '' : s)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+      function fmtNum(n) {
+        n = Number(n) || 0;
+        return n.toLocaleString();
+      }
+    })();
+  </script>
+</body>
+</html>
