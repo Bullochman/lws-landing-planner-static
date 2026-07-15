@@ -94,7 +94,12 @@
         <div class="actions">
           <input type="file" id="csv-input" accept=".csv,text/csv" style="display:none" />
           <button type="button" class="btn secondary" id="upload-btn" data-i18n="rosterUploadBtn">Upload CSV</button>
-          <button type="button" class="btn ghost" id="sample-btn" data-i18n="rosterLoadSample">Load sample roster</button>
+          <select id="roster-picker" class="btn ghost" style="padding:6px 10px">
+            <option value="data/tino-alliance-94.csv" selected>RONY / TINO 티노 (94) — current</option>
+            <option value="data/r10t-alliance-99.csv">R10t Riot (99) — previous</option>
+            <option value="data/example-roster.csv">Tiny example roster (7)</option>
+          </select>
+          <button type="button" class="btn" id="load-picker-btn">Load</button>
           <span class="anchor-summary" style="padding:0;align-self:center">
             <span class="metric-value" id="roster-count-value" style="font-family:var(--mono);font-size:14px;">0</span>
             <span class="metric-label" data-i18n="rosterCount" style="align-self:center;margin-left:6px">members loaded</span>
@@ -258,12 +263,18 @@
           reader.readAsText(file);
         });
 
-        document.getElementById('sample-btn').addEventListener('click', function () {
-          fetch("data/example-roster.csv")
-            .then(function (r) { return r.text(); })
+        function loadFromUrl(url) {
+          return fetch(url)
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
             .then(function (t) { loadRoster(parseCSV(t)); })
-            .catch(function () { alert('Sample roster not available.'); });
+            .catch(function (e) { alert('Could not load ' + url + ': ' + e.message); });
+        }
+        document.getElementById('load-picker-btn').addEventListener('click', function () {
+          var sel = document.getElementById('roster-picker');
+          loadFromUrl(sel.value);
         });
+        // Auto-load RONY 94 on first visit (per user request)
+        loadFromUrl('data/tino-alliance-94.csv');
 
         // Recompute the anchor summary on any anchor input change
         ['anchor-x', 'anchor-y', 'furnace-level'].forEach(function (id) {
