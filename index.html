@@ -246,7 +246,7 @@
         });
 
         document.getElementById('sample-btn').addEventListener('click', function () {
-          fetch("data/example-roster.csv"))
+          fetch("data/example-roster.csv")
             .then(function (r) { return r.text(); })
             .then(function (t) { loadRoster(parseCSV(t)); })
             .catch(function () { alert('Sample roster not available.'); });
