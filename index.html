@@ -47,6 +47,16 @@
       <!-- Season banner (populated per season on load / on lws:season-changed) -->
       <div id="seasonBanner" style="margin:12px 0"></div>
 
+      <!-- S7 placeholder card (shown only when currently selected season is S7) -->
+      <div id="s7ComingSoonBanner" style="display:none;padding:24px;margin:12px 0;background:rgba(201,169,97,0.08);border:1px solid rgba(201,169,97,0.3);border-radius:8px;color:#c9a961;font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5">
+        <h2 id="s7ComingTitle" data-i18n="s7ComingTitle" style="margin:0 0 8px 0;color:#e0c060;font-size:18px">Season 7 launches ~August 2026</h2>
+        <p id="s7ComingBody" data-i18n="s7ComingBody" style="margin:0 0 10px 0;color:#a8b0c0">Full tool support arrives when Anthropic publishes S7 mechanics (usually 1-2 weeks before launch). Track updates at r5tools.io.</p>
+        <p id="s7ComingTracker" data-i18n="s7ComingTracker" style="margin:0;color:#7a8290;font-size:12px">Track: r5tools.io</p>
+      </div>
+
+      <!-- Wrapper around every tool-specific card so we can hide them all at once for S7. -->
+      <div id="tool-sections">
+
       <!-- Anchor input -->
       <section class="card" aria-labelledby="anchor-heading">
         <h2 id="anchor-heading" data-i18n="anchorHeading">Day-1 Anchor</h2>
@@ -173,6 +183,8 @@
           <button type="button" class="btn ghost" id="export-share-btn" data-i18n="exportShareBtn">Copy Discord share block</button>
         </div>
       </section>
+
+      </div><!-- /#tool-sections -->
 
     </div>
     <!-- /#main-app -->
@@ -594,6 +606,27 @@
         if (!ctx || !ctx.season) return;
         var season = ctx.season;
         var seasonId = ctx.season_id || (season && season.id);
+
+        // ---- S7 branch — mechanics not yet published by First Fun / Anthropic.
+        // Hide the whole tool UI and show the KB-cited placeholder card. Universal
+        // suite-nav + warzone selector strip above #main-app stay visible so the
+        // user can override back to a known season.
+        var isS7 = (seasonId === 's7-unnamed' || seasonId === 's7-tbd'
+                    || (seasonId && seasonId.indexOf('s7') === 0));
+        var toolSections = document.getElementById('tool-sections');
+        var s7Banner = document.getElementById('s7ComingSoonBanner');
+        var seasonBanner = document.getElementById('seasonBanner');
+        if (isS7) {
+          if (toolSections) toolSections.style.display = 'none';
+          if (seasonBanner) seasonBanner.style.display = 'none';
+          if (s7Banner) s7Banner.style.display = '';
+          if (window.LWSi18n) window.LWSi18n.apply();
+          return;
+        } else {
+          if (toolSections) toolSections.style.display = '';
+          if (seasonBanner) seasonBanner.style.display = '';
+          if (s7Banner) s7Banner.style.display = 'none';
+        }
 
         // Update tool tagline (only if we have a season-specific key)
         var taglineMap = {

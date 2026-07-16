@@ -90,6 +90,11 @@
       unresolvedTitle:      'Season not yet documented',
       unresolvedBody:       'This tool has no landing plan for the currently selected season. Falling back to the Season-2 4-ring pattern for reference — verify in-game before use.',
 
+      // ---- Season 7 placeholder (unified copy — mirrored across all 6 static tools) ----
+      s7ComingTitle:        'Season 7 launches ~August 2026',
+      s7ComingBody:         'Full tool support arrives when Anthropic publishes S7 mechanics (usually 1-2 weeks before launch). Track updates at r5tools.io.',
+      s7ComingTracker:      'Track: r5tools.io',
+
       // ---- S1 — Crimson Plague ----
       s1_toolTagline:          'Season-1 Day-1 Military Stronghold coordinator',
       s1_anchorHeading:        'Day-1 Anchor · Military Stronghold',
@@ -242,6 +247,11 @@
       seasonBannerTitle:    '시즌 유의사항',
       unresolvedTitle:      '아직 문서화되지 않은 시즌',
       unresolvedBody:       '현재 선택한 시즌에 대한 랜딩 플랜이 없습니다. 참고용으로 시즌 2의 4링 패턴을 표시하지만, 사용 전 인게임에서 확인하세요.',
+
+      // ---- Season 7 placeholder (unified copy — mirrored across all 6 static tools) ----
+      s7ComingTitle:        '시즌 7 출시 예정 — 2026년 8월경',
+      s7ComingBody:         'Anthropic이 시즌 7 메커니즘을 공개하면 (보통 출시 1-2주 전) 전체 도구 지원이 시작됩니다. 업데이트는 r5tools.io에서 확인하세요.',
+      s7ComingTracker:      '추적: r5tools.io',
 
       // ---- S1 — Crimson Plague ----
       s1_toolTagline:          '시즌 1 첫날 군사 요새 코디네이터',
