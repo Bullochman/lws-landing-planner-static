@@ -44,10 +44,19 @@
     <!-- ============ MAIN APP (gated by LWSAccessCodes) ============ -->
     <div id="main-app">
 
+      <!-- Season banner (populated per season on load / on lws:season-changed) -->
+      <div id="seasonBanner" style="margin:12px 0"></div>
+
       <!-- Anchor input -->
       <section class="card" aria-labelledby="anchor-heading">
         <h2 id="anchor-heading" data-i18n="anchorHeading">Day-1 Anchor</h2>
-        <p class="card-sub" data-i18n="anchorSub">Where the Alliance Furnace will be placed. Corner tiles (-15 °C) are safest; every band inward drops ~15 °C.</p>
+        <p class="card-sub" id="anchor-sub" data-i18n="anchorSub">Where the Alliance Furnace will be placed. Corner tiles (-15 °C) are safest; every band inward drops ~15 °C.</p>
+
+        <!-- Formation picker (shown only when season has multiple formations) -->
+        <div class="field" id="formation-picker-wrap" style="display:none">
+          <label for="formation-picker" data-i18n="formationPickerLabel">Formation</label>
+          <select id="formation-picker"></select>
+        </div>
 
         <form id="anchor-form">
           <div class="field-row">
@@ -59,8 +68,9 @@
               <label for="anchor-y" data-i18n="anchorYLabel">Anchor Y (0–1200)</label>
               <input type="number" id="anchor-y" min="0" max="1200" step="1" value="432" required />
             </div>
-            <div class="field">
-              <label for="furnace-level" data-i18n="furnaceLevelLabel">Alliance Furnace level (1–20)</label>
+            <!-- S2 default: Alliance Furnace level. Per-season overrides mount into this container. -->
+            <div class="field" id="anchor-level-field">
+              <label for="furnace-level" id="anchor-level-label" data-i18n="furnaceLevelLabel">Alliance Furnace level (1–20)</label>
               <input type="number" id="furnace-level" min="1" max="20" step="1" value="1" required />
             </div>
           </div>
@@ -68,18 +78,21 @@
             <label for="warzone" data-i18n="warzoneLabel">Warzone / server (optional)</label>
             <input type="text" id="warzone" placeholder="2007" />
           </div>
+          <!-- Season-specific extra fields mount here -->
+          <div id="extra-inputs"></div>
         </form>
 
         <div class="anchor-summary" id="anchor-summary">
-          <div class="metric">
+          <!-- S2 metrics (default). Per-season variants hide these and replace with a custom block via #season-metrics -->
+          <div class="metric metric-s2">
             <span class="metric-label" data-i18n="metricAmbient">Ambient temp</span>
             <span class="metric-value" id="metric-ambient">—</span>
           </div>
-          <div class="metric">
+          <div class="metric metric-s2">
             <span class="metric-label" data-i18n="metricFurnaceBonus">Furnace bonus</span>
             <span class="metric-value" id="metric-furnace">—</span>
           </div>
-          <div class="metric">
+          <div class="metric metric-s2">
             <span class="metric-label" data-i18n="metricEffective">Inside-radius temp</span>
             <span class="metric-value" id="metric-effective">—</span>
           </div>
@@ -87,6 +100,8 @@
             <span class="metric-label" data-i18n="metricMembers">Members placed</span>
             <span class="metric-value" id="metric-members">0</span>
           </div>
+          <!-- Container for season-specific metric tiles injected dynamically -->
+          <div id="season-metrics" style="display:contents"></div>
         </div>
       </section>
 
@@ -134,7 +149,7 @@
                 <th data-i18n="colDelta">Δ from anchor</th>
                 <th data-i18n="colRing">Ring</th>
                 <th data-i18n="colTemp">Tile °C</th>
-                <th data-i18n="colRisk">Freeze risk</th>
+                <th id="col-risk-th" data-i18n="colRisk">Freeze risk</th>
               </tr>
             </thead>
             <tbody id="assign-tbody"></tbody>
@@ -176,7 +191,9 @@
 
   <!-- ============ i18n dictionary ============ -->
   <script src="static/fake-server.js"></script>
-    <script src="static/i18n.js" defer></script>
+  <script src="static/i18n.js" defer></script>
+  <!-- seasons-lib must be available before the app IIFE runs so we can wire season handlers on DOMContentLoaded -->
+  <script src="static/seasons-lib.js" defer></script>
 
   <!-- ============ App logic ============ -->
   <script defer>
@@ -197,18 +214,41 @@
         document.getElementById('langToggle').addEventListener('click', function () {
           if (window.LWSi18n) {
             window.LWSi18n.toggle();
-            // Re-render dynamic content (assignments table + summary) in new lang
+            // Re-render dynamic content (assignments table + summary + season chrome) in new lang
+            applySeasonUI(state.ctx);
             renderAssignments(state.lastResult);
           }
         });
 
         wireForm();
+
+        // Resolve current season, apply season-specific UI. Re-apply on warzone/season change.
+        if (window.LWSSeasons && typeof window.LWSSeasons.resolve === 'function') {
+          window.LWSSeasons.resolve().then(function (ctx) {
+            state.ctx = ctx;
+            applySeasonUI(ctx);
+          }).catch(function () { /* fall through to S2 defaults */ });
+          window.addEventListener('lws:season-changed', function () {
+            window.LWSSeasons.resolve().then(function (ctx) {
+              state.ctx = ctx;
+              applySeasonUI(ctx);
+            });
+          });
+          window.addEventListener('lws:warzone-changed', function () {
+            window.LWSSeasons.resolve().then(function (ctx) {
+              state.ctx = ctx;
+              applySeasonUI(ctx);
+            });
+          });
+        }
       });
 
       // ---- state ----
       var state = {
         roster: [],
         lastResult: null,
+        ctx: null,          // resolved LWSSeasons context
+        formation: null,    // currently selected formation object
       };
 
       // ---- CSV parser (tiny; handles quoted fields, commas inside quotes) ----
@@ -302,6 +342,304 @@
           a.click();
           document.body.removeChild(a);
         });
+      }
+
+      // ---- season-aware UI ---------------------------------------------------
+      //
+      // Reads the LWSSeasons context and swaps labels, banner warnings, extra
+      // input fields, and metric tiles for the currently-selected season. S2 is
+      // the default codepath (existing IIFE) — for S2, this function is a no-op
+      // beyond re-showing the S2 metric block.
+      //
+      // Season variants covered: s1-crimson-plague, s3-golden-kingdom,
+      // s4-evernight-isle, s5-wild-west, s6-shadow-rainforest. Any unknown
+      // season falls back to S2 chrome with an "unresolved" caveat banner.
+      function tLang() {
+        return (window.LWSi18n && window.LWSi18n.lang && window.LWSi18n.lang()) || 'en';
+      }
+      function tt(key) {
+        return (window.LWSi18n && window.LWSi18n.t) ? window.LWSi18n.t(key) : key;
+      }
+      function pickLangValue(obj) {
+        if (!obj) return '';
+        var lang = tLang();
+        if (obj[lang]) return obj[lang];
+        if (obj.en) return obj.en;
+        // Fall through — some seasons.json entries store the KR key as 'kr' vs 'ko'.
+        if (lang === 'ko' && obj.kr) return obj.kr;
+        return '';
+      }
+
+      function setAnchorLevelField(seasonId) {
+        var wrap = document.getElementById('anchor-level-field');
+        var label = document.getElementById('anchor-level-label');
+        var input = document.getElementById('furnace-level');
+        if (!wrap || !label || !input) return;
+        // S2 default (Alliance Furnace 1-20)
+        var cfg = { key: 'furnaceLevelLabel', min: 1, max: 20, val: input.value || 1, show: true };
+        if (seasonId === 's1-crimson-plague') {
+          cfg = { key: 's1_strongholdLevelLabel', min: 1, max: 6, val: 1, show: true };
+        } else if (seasonId === 's3-golden-kingdom') {
+          cfg = { key: 's3_acLevelLabel', min: 1, max: 15, val: 1, show: true };
+        } else if (seasonId === 's4-evernight-isle') {
+          cfg = { key: 's3_acLevelLabel', min: 1, max: 15, val: 1, show: true };
+        } else if (seasonId === 's5-wild-west') {
+          cfg = { key: 's5_bankTargetLabel', min: 1, max: 10, val: 1, show: true };
+        } else if (seasonId === 's6-shadow-rainforest') {
+          // No environmental anchor level; hide the field.
+          cfg = { show: false };
+        }
+        if (!cfg.show) { wrap.style.display = 'none'; return; }
+        wrap.style.display = '';
+        label.textContent = tt(cfg.key);
+        input.min = cfg.min;
+        input.max = cfg.max;
+        if (input.min > Number(input.value) || Number(input.value) > input.max) input.value = cfg.val;
+      }
+
+      function renderExtraInputs(seasonId) {
+        var mount = document.getElementById('extra-inputs');
+        if (!mount) return;
+        mount.innerHTML = '';
+        function addTextField(id, labelKey, placeholder) {
+          var f = document.createElement('div');
+          f.className = 'field';
+          f.innerHTML = '<label for="' + id + '">' + tt(labelKey) + '</label>' +
+                        '<input type="text" id="' + id + '" placeholder="' + (placeholder || '') + '" />';
+          mount.appendChild(f);
+        }
+        function addNumField(id, labelKey, min, max, val) {
+          var f = document.createElement('div');
+          f.className = 'field';
+          f.innerHTML = '<label for="' + id + '">' + tt(labelKey) + '</label>' +
+                        '<input type="number" id="' + id + '" min="' + min + '" max="' + max + '" step="1" value="' + val + '" />';
+          mount.appendChild(f);
+        }
+        function addSelectField(id, labelKey, options) {
+          var f = document.createElement('div');
+          f.className = 'field';
+          var opts = options.map(function (o) {
+            return '<option value="' + o.value + '">' + tt(o.labelKey) + '</option>';
+          }).join('');
+          f.innerHTML = '<label for="' + id + '">' + tt(labelKey) + '</label>' +
+                        '<select id="' + id + '">' + opts + '</select>';
+          mount.appendChild(f);
+        }
+
+        if (seasonId === 's4-evernight-isle') {
+          addTextField('neighbor-ac', 's4_neighborAcLabel', '(x, y)');
+          addNumField('opto-lab', 's4_optoLabLabel', 1, 35, 1);
+        } else if (seasonId === 's5-wild-west') {
+          addNumField('safe-time', 's5_safeTimeLabel', 7, 15, 10);
+        } else if (seasonId === 's6-shadow-rainforest') {
+          addSelectField('faction', 's6_factionLabel', [
+            { value: 'deepwood',     labelKey: 's6_factionDeepwood' },
+            { value: 'wetland',      labelKey: 's6_factionWetland' },
+            { value: 'great-river',  labelKey: 's6_factionGreatRiver' }
+          ]);
+          addNumField('sub-alliances', 's6_subAlliancesLabel', 1, 6, 1);
+        }
+      }
+
+      function renderSeasonMetrics(seasonId, mechanics) {
+        mechanics = mechanics || {};
+        var mount = document.getElementById('season-metrics');
+        var s2tiles = document.querySelectorAll('.metric-s2');
+        if (!mount) return;
+        mount.innerHTML = '';
+
+        // S2 (default): show ambient/furnace/effective tiles, hide season-metrics
+        if (!seasonId || seasonId === 's2-polar-storm') {
+          s2tiles.forEach(function (t) { t.style.display = ''; });
+          return;
+        }
+        // Non-S2: hide the thermal tiles
+        s2tiles.forEach(function (t) { t.style.display = 'none'; });
+
+        function metric(labelKey, id, val) {
+          var d = document.createElement('div');
+          d.className = 'metric';
+          d.innerHTML = '<span class="metric-label">' + tt(labelKey) + '</span>' +
+                        '<span class="metric-value" id="' + id + '">' + (val == null ? '—' : val) + '</span>';
+          mount.appendChild(d);
+        }
+
+        if (seasonId === 's1-crimson-plague') {
+          metric('s1_metricVrTarget', 'metric-vr-target', '1500–6000');
+          metric('s1_metricCorruptorLevel', 'metric-corruptor', '—');
+          metric('s1_metricLeaderCoverage', 'metric-leader-vr', '—');
+        } else if (seasonId === 's3-golden-kingdom') {
+          metric('s3_metricAcRange', 'metric-ac-range', '—');
+          metric('s3_metricCurseGate', 'metric-curse-gate', 'CRL L30');
+          metric('s3_metricInRange', 'metric-in-range', '—');
+        } else if (seasonId === 's4-evernight-isle') {
+          var drainPerMin = mechanics.blood_night_power_drain_per_min || 18000;
+          var duration = mechanics.blood_night_duration_min || 30;
+          var drainWindow = (drainPerMin * duration).toLocaleString();
+          metric('s4_metricLighthouseBonus', 'metric-lighthouse', '—');
+          metric('s4_metricBloodNightDrain', 'metric-blood-night', drainWindow);
+          metric('s4_metricAcSpacing', 'metric-ac-spacing', '—');
+        } else if (seasonId === 's5-wild-west') {
+          var vrForL10 = mechanics.virus_resistance_for_l10_banks || 39900;
+          metric('s5_metricBankHoldings', 'metric-bank-holdings', '4 (+1/city, max 12)');
+          metric('s5_metricVrGate', 'metric-vr-gate', vrForL10.toLocaleString());
+          metric('s5_metricSafeTime', 'metric-safe-time', '7–15 h');
+          metric('s5_metricWarSlots', 'metric-war-slots', 'Wed / Sat');
+        } else if (seasonId === 's6-shadow-rainforest') {
+          var sanctuary = mechanics.sanctuary_timer_min || 20;
+          metric('s6_metricAltarsHeld', 'metric-altars', '0 / 3');
+          metric('s6_metricPactDuration', 'metric-pact', '7 d');
+          metric('s6_metricSanctuary', 'metric-sanctuary', sanctuary + ' min');
+        }
+      }
+
+      function renderSeasonBanner(season, formation) {
+        var banner = document.getElementById('seasonBanner');
+        if (!banner) return;
+        banner.innerHTML = '';
+        var seasonId = season && season.id;
+
+        // Unresolved / off-season fallback
+        var noVariant = ['s2-polar-storm', 's1-crimson-plague', 's3-golden-kingdom',
+                         's4-evernight-isle', 's5-wild-west', 's6-shadow-rainforest']
+                         .indexOf(seasonId) === -1;
+        if (noVariant) {
+          var box = document.createElement('div');
+          box.className = 'warnings';
+          box.style.cssText = 'background:rgba(255,193,7,0.06);border-left:3px solid #e0c060;padding:10px 12px;margin-bottom:8px';
+          box.innerHTML = '<div class="warn-title">' + tt('unresolvedTitle') + '</div>' + tt('unresolvedBody');
+          banner.appendChild(box);
+          return;
+        }
+
+        // Pull warnings[] from the selected formation config (seasons.json)
+        var warns = (formation && formation.warnings) || [];
+        // Compose the season-specific i18n warning keys per plan
+        var extraKeys = {
+          's1-crimson-plague':   ['s1_warnLeaderVrOnly'],
+          's3-golden-kingdom':   ['s3_warnSandworm', 's3_warnCurseGate'],
+          's4-evernight-isle':   ['s4_warnSpacing', 's4_warnCopperWars', 's4_factionLocked'],
+          's5-wild-west':        ['s5_warnMergedMap', 's5_warnBankVr', 's5_warnBankSpeculative'],
+          's6-shadow-rainforest':['s6_warnCityDestruction', 's6_warnMegaHive', 's6_warnAltars']
+        }[seasonId] || [];
+
+        // Formation-config warnings first (from seasons.json), then curated i18n warnings.
+        warns.forEach(function (w) {
+          var text = pickLangValue(w);
+          if (!text) return;
+          var box = document.createElement('div');
+          box.className = 'warnings';
+          box.style.cssText = 'background:rgba(201,169,97,0.06);border-left:3px solid #c9a961;padding:10px 12px;margin-bottom:8px';
+          box.innerHTML = '<div class="warn-title">' + tt('seasonBannerTitle') + '</div>' + escapeHtml(text);
+          banner.appendChild(box);
+        });
+        extraKeys.forEach(function (k) {
+          var box = document.createElement('div');
+          box.className = 'warnings';
+          box.style.cssText = 'background:rgba(201,169,97,0.06);border-left:3px solid #c9a961;padding:10px 12px;margin-bottom:8px';
+          box.innerHTML = '<div class="warn-title">' + tt('seasonBannerTitle') + '</div>' + escapeHtml(tt(k));
+          banner.appendChild(box);
+        });
+      }
+
+      function renderFormationPicker(season) {
+        var wrap = document.getElementById('formation-picker-wrap');
+        var sel = document.getElementById('formation-picker');
+        if (!wrap || !sel) return;
+        var formations = (season && season.mechanics_config && season.mechanics_config.formations) || [];
+        if (formations.length <= 1) { wrap.style.display = 'none'; return; }
+        wrap.style.display = '';
+        sel.innerHTML = '';
+        formations.forEach(function (f, i) {
+          var opt = document.createElement('option');
+          opt.value = f.key || String(i);
+          var name = pickLangValue(f.display_name) || f.key || ('Formation ' + (i + 1));
+          opt.textContent = name;
+          sel.appendChild(opt);
+        });
+        // Reset onchange
+        sel.onchange = function () {
+          var picked = formations.filter(function (f) { return (f.key || '') === sel.value; })[0] || formations[0];
+          state.formation = picked;
+          renderSeasonBanner(season, picked);
+          setAnchorSubForFormation(picked);
+        };
+      }
+
+      function setAnchorSubForFormation(formation) {
+        var seasonId = state.ctx && state.ctx.season_id;
+        var subKey = null;
+        if (seasonId === 's1-crimson-plague')      subKey = 's1_anchorSub';
+        else if (seasonId === 's3-golden-kingdom') subKey = 's3_anchorSub';
+        else if (seasonId === 's4-evernight-isle') subKey = 's4_anchorSub';
+        else if (seasonId === 's5-wild-west')      subKey = 's5_anchorSub';
+        else if (seasonId === 's6-shadow-rainforest') subKey = 's6_anchorSub';
+        else subKey = 'anchorSub';
+        var el = document.getElementById('anchor-sub');
+        if (el) el.textContent = tt(subKey);
+
+        // If the formation provides a center_landmark name, append it in muted color.
+        if (formation && formation.center_landmark) {
+          var landmark = pickLangValue(formation.center_landmark);
+          if (landmark && el) {
+            var span = document.createElement('span');
+            span.style.cssText = 'display:block;font-size:12px;color:#7a8290;margin-top:4px';
+            span.textContent = '→ ' + landmark;
+            el.appendChild(span);
+          }
+        }
+      }
+
+      function applySeasonUI(ctx) {
+        if (!ctx || !ctx.season) return;
+        var season = ctx.season;
+        var seasonId = ctx.season_id || (season && season.id);
+
+        // Update tool tagline (only if we have a season-specific key)
+        var taglineMap = {
+          's1-crimson-plague':    's1_toolTagline',
+          's2-polar-storm':       'toolTagline',
+          's3-golden-kingdom':    's3_toolTagline',
+          's4-evernight-isle':    's4_toolTagline',
+          's5-wild-west':         's5_toolTagline',
+          's6-shadow-rainforest': 's6_toolTagline'
+        };
+        // (tagline isn't in the DOM currently, so we just skip — reserved for future header line)
+
+        // Anchor heading
+        var headingMap = {
+          's1-crimson-plague':    's1_anchorHeading',
+          's2-polar-storm':       'anchorHeading',
+          's3-golden-kingdom':    's3_anchorHeading',
+          's4-evernight-isle':    's4_anchorHeading',
+          's5-wild-west':         's5_anchorHeading',
+          's6-shadow-rainforest': 's6_anchorHeading'
+        };
+        var hEl = document.getElementById('anchor-heading');
+        if (hEl) hEl.textContent = tt(headingMap[seasonId] || 'anchorHeading');
+
+        // Risk column header per-season
+        var colRiskMap = {
+          's1-crimson-plague':    's1_colVrGate',
+          's3-golden-kingdom':    's3_colSandwormRange',
+          's4-evernight-isle':    's4_colBloodNight',
+          's5-wild-west':         's5_colBankFit',
+          's6-shadow-rainforest': 's6_colFactionPact'
+        };
+        var thRisk = document.getElementById('col-risk-th');
+        if (thRisk) thRisk.textContent = tt(colRiskMap[seasonId] || 'colRisk');
+
+        // Pick initial formation (first from mechanics_config.formations, if any)
+        var formations = (season.mechanics_config && season.mechanics_config.formations) || [];
+        state.formation = formations[0] || null;
+
+        // Re-render dependent chrome
+        renderFormationPicker(season);
+        setAnchorLevelField(seasonId);
+        renderExtraInputs(seasonId);
+        renderSeasonMetrics(seasonId, season.mechanics_config || {});
+        setAnchorSubForFormation(state.formation);
+        renderSeasonBanner(season, state.formation);
       }
 
       // ---- anchor summary (client-side mirror of server logic) ----
@@ -571,6 +909,5 @@
       }
     })();
   </script>
-  <script src="static/seasons-lib.js" defer></script>
 </body>
 </html>
