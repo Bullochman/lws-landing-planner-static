@@ -365,7 +365,13 @@
   };
 
   var state = {
-    lang: (navigator.language || 'en').toLowerCase().startsWith('ko') ? 'ko' : 'en',
+    lang: (function () {
+      try {
+        var stored = localStorage.getItem('lws_lang');
+        if (stored === 'en' || stored === 'ko') return stored;
+      } catch (e) { /* private mode */ }
+      return (navigator.language || 'en').toLowerCase().startsWith('ko') ? 'ko' : 'en';
+    })(),
     listeners: [],
   };
 
@@ -392,6 +398,8 @@
   function setLang(l) {
     if (l !== 'en' && l !== 'ko') return;
     state.lang = l;
+    try { localStorage.setItem('lws_lang', l); } catch (e) { /* ignore */ }
+    try { window.dispatchEvent(new CustomEvent('lws:lang-changed', { detail: { lang: l } })); } catch (e) { /* ignore */ }
     apply();
   }
 
