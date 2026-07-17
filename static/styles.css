@@ -245,3 +245,21 @@ footer.app-footer a:hover { text-decoration: underline; }
   background: rgba(224, 138, 138, 0.15); color: var(--error);
   text-transform: uppercase; margin-left: 6px; vertical-align: middle;
 }
+
+/* ---- mobile responsive (added 2026-07-17) ---- */
+.card { min-width: 0; overflow-x: hidden; }
+.card > div[style*="overflow"] { -webkit-overflow-scrolling: touch; }
+.assign-table { min-width: 420px; }
+
+@media (max-width: 520px) {
+  body { padding: 0; }
+  .wrap { padding: 10px 8px; }
+  h1 { font-size: clamp(20px, 5.5vw, 26px); }
+  h2 { font-size: clamp(15px, 4.5vw, 20px); }
+  .card { padding: 12px 10px; }
+  .assign-table { font-size: 11px; min-width: 400px; }
+  .assign-table th, .assign-table td { padding: 5px 6px; }
+  .btn { padding: 10px 14px; font-size: 13px; }
+  .anchor-summary { flex-wrap: wrap; }
+  .actions { gap: 6px; }
+}
