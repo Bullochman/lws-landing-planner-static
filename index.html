@@ -325,11 +325,34 @@
           reader.readAsText(file);
         });
 
+        function showRosterToast(msg, kind) {
+          var t = document.getElementById('roster-toast');
+          if (!t) {
+            t = document.createElement('div');
+            t.id = 'roster-toast';
+            t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 20px;border-radius:8px;font:600 13px system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,0.4);z-index:99999;opacity:0;transition:opacity .25s';
+            document.body.appendChild(t);
+          }
+          t.style.background = kind === 'error' ? '#7a1f1f' : '#1a4a2a';
+          t.style.color      = kind === 'error' ? '#ffdad7' : '#d7ffe0';
+          t.style.border     = '1px solid ' + (kind === 'error' ? '#b8402c' : '#2eaa4c');
+          t.textContent = msg;
+          t.style.opacity = '1';
+          clearTimeout(t._h);
+          t._h = setTimeout(function () { t.style.opacity = '0'; }, 2400);
+        }
         function loadFromUrl(url) {
+          var sel = document.getElementById('roster-picker');
+          var label = sel && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent.trim() : url;
+          showRosterToast('Loading ' + label + '…', 'ok');
           return fetch(url)
             .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-            .then(function (t) { loadRoster(parseCSV(t)); })
-            .catch(function (e) { alert('Could not load ' + url + ': ' + e.message); });
+            .then(function (t) {
+              var rows = parseCSV(t);
+              loadRoster(rows);
+              showRosterToast('✓ ' + label + ' loaded (' + rows.length + ' members)', 'ok');
+            })
+            .catch(function (e) { showRosterToast('✗ Could not load ' + label + ': ' + e.message, 'error'); });
         }
         document.getElementById('load-picker-btn').addEventListener('click', function () {
           var sel = document.getElementById('roster-picker');
