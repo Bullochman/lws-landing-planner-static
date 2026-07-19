@@ -809,7 +809,8 @@
         if (wrap && getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
         var overlay = document.createElement('canvas');
         overlay.width = canvas.width; overlay.height = canvas.height;
-        overlay.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;width:100%;height:100%';
+        // Overlay CSS box sync'd to base canvas via syncOverlay() so glow + line align.
+        overlay.style.cssText = 'position:absolute;pointer-events:none';
         wrap.appendChild(overlay);
         var tip = document.createElement('div');
         tip.style.cssText = [
@@ -822,6 +823,18 @@
         ].join(';');
         wrap.appendChild(tip);
         var octx = overlay.getContext('2d');
+
+        function syncOverlay() {
+          var cr = canvas.getBoundingClientRect();
+          var wr = wrap.getBoundingClientRect();
+          overlay.style.left = (cr.left - wr.left) + 'px';
+          overlay.style.top  = (cr.top  - wr.top)  + 'px';
+          overlay.style.width  = cr.width  + 'px';
+          overlay.style.height = cr.height + 'px';
+        }
+        syncOverlay();
+        window.addEventListener('resize', syncOverlay);
+        if (window.ResizeObserver) new ResizeObserver(syncOverlay).observe(canvas);
 
         function clear() { octx.clearRect(0, 0, overlay.width, overlay.height); tip.style.opacity = '0'; }
         function fmtPower(p) { return p ? String(p) : '—'; }
@@ -877,11 +890,15 @@
               'ring ' + (m.ring || '?') + ' · ' + (m.tile_temp_with_furnace_c != null ? m.tile_temp_with_furnace_c + '°C · ' : '') +
               riskChip(m.freeze_risk) + '</div>';
 
+          var wr = wrap.getBoundingClientRect();
+          var canvasOffX = rect.left - wr.left;
+          var canvasOffY = rect.top  - wr.top;
           var cssX = (tipCanvasX / scaleX);
           var cssY = (tipCanvasY / scaleY);
           if (cssX + 260 > rect.width) cssX = rect.width - 268;
           if (cssY < 98) cssY = 98;
-          tip.style.left = cssX + 'px'; tip.style.top = cssY + 'px';
+          tip.style.left = (canvasOffX + cssX) + 'px';
+          tip.style.top  = (canvasOffY + cssY) + 'px';
           tip.style.opacity = '1';
         });
         canvas.addEventListener('mouseleave', clear);
