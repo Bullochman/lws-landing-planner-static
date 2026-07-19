@@ -798,6 +798,95 @@
         });
       }
 
+      // Hover-tooltip system for the preview canvas — reveals member name/rank/HQ/power
+      // on mouseover, with a golden connector line from tile to floating tooltip.
+      // Base render stays PNG-export clean because the hover layer sits on a
+      // separate overlay canvas positioned above the preview.
+      function attachPreviewHover(canvas) {
+        if (canvas._hoverWired) return;
+        canvas._hoverWired = true;
+        var wrap = canvas.parentNode;
+        if (wrap && getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+        var overlay = document.createElement('canvas');
+        overlay.width = canvas.width; overlay.height = canvas.height;
+        overlay.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;width:100%;height:100%';
+        wrap.appendChild(overlay);
+        var tip = document.createElement('div');
+        tip.style.cssText = [
+          'position:absolute','pointer-events:none','z-index:5',
+          'background:rgba(13,20,36,0.96)','border:1px solid rgba(201,169,97,0.55)',
+          'border-radius:6px','padding:8px 10px','font-family:ui-monospace,SFMono-Regular,Menlo,monospace',
+          'font-size:11.5px','color:#e6e8ee','line-height:1.45','white-space:nowrap',
+          'box-shadow:0 6px 20px rgba(0,0,0,0.6)','opacity:0','transition:opacity .08s',
+          'transform:translate(0,-100%)','max-width:260px',
+        ].join(';');
+        wrap.appendChild(tip);
+        var octx = overlay.getContext('2d');
+
+        function clear() { octx.clearRect(0, 0, overlay.width, overlay.height); tip.style.opacity = '0'; }
+        function fmtPower(p) { return p ? String(p) : '—'; }
+        function riskChip(risk) {
+          if (!risk || risk === 'safe') return '<span style="color:#8ae0a3">safe</span>';
+          if (risk === 'warning') return '<span style="color:#e0c080">warning</span>';
+          return '<span style="color:#e08a8a">danger</span>';
+        }
+
+        canvas.addEventListener('mousemove', function (e) {
+          var hits = state.previewHitTest || [];
+          if (!hits.length) return;
+          var rect = canvas.getBoundingClientRect();
+          var scaleX = canvas.width / rect.width;
+          var scaleY = canvas.height / rect.height;
+          var mx = (e.clientX - rect.left) * scaleX;
+          var my = (e.clientY - rect.top) * scaleY;
+          var best = null, bestD = 900;
+          for (var i = 0; i < hits.length; i++) {
+            var h = hits[i];
+            var dx = h.px - mx, dy = h.py - my;
+            var d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; best = h; }
+          }
+          if (!best) { clear(); return; }
+
+          octx.clearRect(0, 0, overlay.width, overlay.height);
+          var grad = octx.createRadialGradient(best.px, best.py, best.size, best.px, best.py, best.size * 3);
+          grad.addColorStop(0, best.color);
+          grad.addColorStop(1, 'rgba(0,0,0,0)');
+          octx.globalAlpha = 0.55;
+          octx.fillStyle = grad;
+          octx.beginPath(); octx.arc(best.px, best.py, best.size * 3, 0, Math.PI * 2); octx.fill();
+          octx.globalAlpha = 1;
+
+          var tipCanvasX = mx + 18;
+          var tipCanvasY = my - 12;
+          octx.strokeStyle = 'rgba(201,169,97,0.75)'; octx.lineWidth = 1.2;
+          octx.setLineDash([3, 3]);
+          octx.beginPath(); octx.moveTo(best.px + best.size / 2, best.py); octx.lineTo(tipCanvasX, tipCanvasY);
+          octx.stroke(); octx.setLineDash([]);
+
+          var m = best.member;
+          tip.innerHTML =
+            '<div style="color:' + best.color + ';font-weight:700;letter-spacing:0.02em;margin-bottom:2px">' +
+              (m.name || '(unnamed)') + '</div>' +
+            '<div style="color:#a8b0c0">' +
+              (m.rank || '—') + ' · HQ ' + (m.hq_level || m.hq || '?') +
+              ' · <span style="color:#c9a961">' + fmtPower(m.power) + '</span></div>' +
+            '<div style="color:#7a8290;font-size:10.5px;margin-top:3px">' +
+              'tile (' + m.assigned_x + ', ' + m.assigned_y + ') · Δ(' + m.delta_x + ', ' + m.delta_y + ')</div>' +
+            '<div style="color:#7a8290;font-size:10.5px">' +
+              'ring ' + (m.ring || '?') + ' · ' + (m.tile_temp_with_furnace_c != null ? m.tile_temp_with_furnace_c + '°C · ' : '') +
+              riskChip(m.freeze_risk) + '</div>';
+
+          var cssX = (tipCanvasX / scaleX);
+          var cssY = (tipCanvasY / scaleY);
+          if (cssX + 260 > rect.width) cssX = rect.width - 268;
+          if (cssY < 98) cssY = 98;
+          tip.style.left = cssX + 'px'; tip.style.top = cssY + 'px';
+          tip.style.opacity = '1';
+        });
+        canvas.addEventListener('mouseleave', clear);
+      }
+
       function renderPreview(data) {
         var canvas = document.getElementById('preview-canvas');
         var ctx = canvas.getContext('2d');
@@ -862,6 +951,8 @@
         var rankColor = {
           R5: '#da8fff', R4: '#ffd07a', R3: '#00bfff', R2: '#44dd66', R1: '#6699ff'
         };
+        // Hit-test store for hover tooltip (reset every render).
+        state.previewHitTest = [];
         data.assignments.forEach(function (a) {
           var px = cx + a.delta_x * scale;
           var py = cy + a.delta_y * scale;
@@ -872,6 +963,7 @@
           var s = (a.rank === 'R5' || a.rank === 'R4') ? 8 : 6;
           ctx.fillStyle = color;
           ctx.fillRect(px - s / 2, py - s / 2, s, s);
+          state.previewHitTest.push({ px: px, py: py, size: s, color: color, member: a });
           // Small name label — only if member has enough room (avoid crowding)
           if (data.assignments.length <= 30) {
             ctx.fillStyle = '#a8b0c0';
@@ -882,6 +974,7 @@
             ctx.fillText(name, px, py + s / 2 + 2);
           }
         });
+        attachPreviewHover(canvas);
 
         // ---- Legend + footer ----
         var legY = H - footerH + 8;
