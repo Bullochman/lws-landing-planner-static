@@ -271,6 +271,104 @@
     list.style.cssText = 'flex:1;overflow-y:auto;border:1px solid #1a2436;border-radius:6px;background:rgba(0,0,0,0.2);padding:4px;min-height:280px';
     modal.appendChild(list);
 
+    // ── Contribute-your-warzone panel (collapsed by default) ──────
+    // Wires up to POST access-codes.r5tools.io/api/warzone/contribute
+    // shipped in commit 87c2d4e. Submissions land in
+    // logs/warzone-submissions.jsonl for owner promotion into canonical DB.
+    var contribWrap = document.createElement('div');
+    contribWrap.style.cssText = 'margin-top:14px;border-top:1px solid #1a2436;padding-top:14px';
+
+    var contribBtn = document.createElement('button');
+    contribBtn.type = 'button';
+    contribBtn.textContent = lang === 'ko' ? '+ 내 워존 정보 제공하기' : '+ Add your warzone';
+    contribBtn.style.cssText = 'width:100%;padding:10px;background:rgba(201,169,97,0.08);color:#c9a961;border:1px dashed rgba(201,169,97,0.4);border-radius:6px;font-family:inherit;font-size:12.5px;cursor:pointer;letter-spacing:0.02em';
+    contribBtn.addEventListener('click', function () {
+      contribBtn.style.display = 'none';
+      contribForm.style.display = 'block';
+    });
+    contribWrap.appendChild(contribBtn);
+
+    var contribForm = document.createElement('div');
+    contribForm.style.cssText = 'display:none;background:rgba(0,0,0,0.25);border:1px solid #2a3444;border-radius:6px;padding:14px;margin-top:2px';
+    var fieldStyle = 'display:block;font-size:11px;color:#7a8290;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px';
+    var inputStyle = 'width:100%;padding:7px 9px;background:#0a0e1a;color:#e6e8ee;border:1px solid #2a3444;border-radius:4px;font-family:inherit;font-size:13px;box-sizing:border-box';
+
+    function mkLabel(txt) { var l = document.createElement('label'); l.textContent = txt; l.style.cssText = fieldStyle; return l; }
+    function mkInput(type, placeholder) { var i = document.createElement('input'); i.type = type; i.placeholder = placeholder || ''; i.style.cssText = inputStyle; return i; }
+
+    contribForm.appendChild(mkLabel(lang === 'ko' ? '워존 번호' : 'Warzone number'));
+    var wzIn = mkInput('number', 'e.g. 2007'); wzIn.min = '1'; wzIn.max = '9999'; contribForm.appendChild(wzIn);
+
+    contribForm.appendChild(mkLabel(lang === 'ko' ? '현재 시즌' : 'Current season'));
+    var seasonSel = document.createElement('select'); seasonSel.style.cssText = inputStyle + ';cursor:pointer';
+    ['s1-crimson-plague','s2-polar-storm','s3-golden-kingdom','s4-evernight-isle','s5-wild-west','pre-season','off-season'].forEach(function (sid) {
+      var o = document.createElement('option'); o.value = sid; o.textContent = prettyLabels[sid] || sid; seasonSel.appendChild(o);
+    });
+    seasonSel.value = 's2-polar-storm';
+    contribForm.appendChild(seasonSel);
+
+    contribForm.appendChild(mkLabel(lang === 'ko' ? '주차 (1-8)' : 'Week (1-8)'));
+    var weekIn = mkInput('number', '1'); weekIn.min = '1'; weekIn.max = '12'; weekIn.value = '1'; contribForm.appendChild(weekIn);
+
+    contribForm.appendChild(mkLabel(lang === 'ko' ? '지역' : 'Region'));
+    var regionSel = document.createElement('select'); regionSel.style.cssText = inputStyle + ';cursor:pointer';
+    [['','—'],['na-mixed','NA'],['eu-mixed','EU'],['kr-mixed','KR'],['jp-mixed','JP'],['latam-mixed','LATAM'],['cn-mixed','CN']].forEach(function (pair) {
+      var o = document.createElement('option'); o.value = pair[0]; o.textContent = pair[1]; regionSel.appendChild(o);
+    });
+    contribForm.appendChild(regionSel);
+
+    contribForm.appendChild(mkLabel(lang === 'ko' ? '시즌 시작일 (선택)' : 'Season start date (optional)'));
+    var startIn = mkInput('date'); contribForm.appendChild(startIn);
+
+    var contribMsg = document.createElement('div');
+    contribMsg.style.cssText = 'font-size:12px;color:#7a8290;margin-top:10px;min-height:16px';
+    contribForm.appendChild(contribMsg);
+
+    var contribActions = document.createElement('div');
+    contribActions.style.cssText = 'display:flex;gap:6px;justify-content:flex-end;margin-top:10px';
+    var submitBtn = document.createElement('button');
+    submitBtn.type = 'button';
+    submitBtn.textContent = lang === 'ko' ? '전송' : 'Submit';
+    submitBtn.style.cssText = 'padding:8px 16px;background:#c9a961;color:#0a0e1a;border:none;border-radius:5px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer;letter-spacing:.03em';
+    submitBtn.addEventListener('click', function () {
+      var wz = wzIn.value.trim();
+      if (!wz.match(/^\d+$/)) { contribMsg.textContent = lang === 'ko' ? '유효한 워존 번호를 입력하세요.' : 'Enter a valid warzone number.'; return; }
+      submitBtn.disabled = true;
+      contribMsg.textContent = lang === 'ko' ? '전송 중…' : 'Sending…';
+      var body = {
+        warzone: wz,
+        current_season_id: seasonSel.value,
+        season_week: parseInt(weekIn.value || '1', 10),
+        season_start_date: startIn.value || null,
+        region: regionSel.value || null,
+      };
+      fetch('https://access-codes.r5tools.io/api/warzone/contribute', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+        .then(function (resp) {
+          submitBtn.disabled = false;
+          if (resp.status === 401) {
+            contribMsg.innerHTML = '<span style="color:#e0c080">' + (lang === 'ko' ? '먼저 액세스 코드를 입력하세요.' : 'Redeem an access code first.') + '</span>';
+          } else if (resp.body && resp.body.ok) {
+            contribMsg.innerHTML = '<span style="color:#8ae0a3">✓ ' + (resp.body.message || (lang === 'ko' ? '감사합니다!' : 'Thanks!')) + '</span>';
+            wzIn.value = '';
+            setTimeout(function () { contribForm.style.display = 'none'; contribBtn.style.display = 'block'; contribMsg.innerHTML = ''; }, 3000);
+          } else {
+            contribMsg.innerHTML = '<span style="color:#e08a8a">' + (resp.body && resp.body.message || 'Error') + '</span>';
+          }
+        })
+        .catch(function (e) {
+          submitBtn.disabled = false;
+          contribMsg.innerHTML = '<span style="color:#e08a8a">' + (lang === 'ko' ? '네트워크 오류. 다시 시도하세요.' : 'Network error. Try again.') + '</span>';
+        });
+    });
+    contribActions.appendChild(submitBtn);
+    contribForm.appendChild(contribActions);
+    contribWrap.appendChild(contribForm);
+    modal.appendChild(contribWrap);
+
     var actions = document.createElement('div');
     actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:14px';
     var cancelBtn = document.createElement('button');
@@ -291,23 +389,36 @@
     });
     function rowFor(id) {
       var wz = byId[id];
-      var sid = wz.current_season_id || 'pre-season';
-      var pretty = prettyLabels[sid] || sid;
+      var sid = wz.current_season_id; // may be null → unconfirmed
+      var isRangeInferred = wz.confirmed_by === 'range-inferred' || sid == null;
+      var pretty = sid ? (prettyLabels[sid] || sid) : (lang === 'ko' ? '시즌 미확인 — 데이터 기여 요청' : 'Season unconfirmed — help by contributing');
       var row = document.createElement('button');
       row.type = 'button';
       var isCurrent = id === currentId;
-      row.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;background:' + (isCurrent ? 'rgba(201,169,97,0.14)' : 'transparent') + ';color:#e6e8ee;border:1px solid ' + (isCurrent ? 'rgba(201,169,97,0.5)' : 'transparent') + ';border-radius:5px;font-family:inherit;font-size:13px;cursor:pointer;text-align:left;margin:2px 0;transition:background 0.1s';
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;background:' + (isCurrent ? 'rgba(201,169,97,0.14)' : 'transparent') + ';color:#e6e8ee;border:1px solid ' + (isCurrent ? 'rgba(201,169,97,0.5)' : 'transparent') + ';border-radius:5px;font-family:inherit;font-size:13px;cursor:pointer;text-align:left;margin:2px 0;transition:background 0.1s;opacity:' + (isRangeInferred ? '0.65' : '1');
       row.addEventListener('mouseenter', function () { if (!isCurrent) row.style.background = 'rgba(255,255,255,0.04)'; });
       row.addEventListener('mouseleave', function () { if (!isCurrent) row.style.background = 'transparent'; });
+      var idColor = isRangeInferred ? '#7a8290' : '#c9a961';
+      var descColor = isRangeInferred ? '#7a8290' : '#a8b0c0';
       row.innerHTML =
-        '<span style="min-width:60px;font-family:ui-monospace,monospace;color:#c9a961;font-weight:700">' + id + '</span>' +
-        '<span style="flex:1;color:#a8b0c0;font-size:12.5px">' + pretty + (wz.season_week ? ' <span style="color:#7a8290">· Wk ' + wz.season_week + '</span>' : '') + '</span>' +
-        (wz.region ? '<span style="font-size:10.5px;color:#7a8290;font-family:ui-monospace,monospace;text-transform:uppercase;letter-spacing:0.05em">' + wz.region + '</span>' : '');
-      row.dataset.searchable = (id + ' ' + (wz.region || '') + ' ' + sid).toLowerCase();
+        '<span style="min-width:60px;font-family:ui-monospace,monospace;color:' + idColor + ';font-weight:700">' + id + '</span>' +
+        '<span style="flex:1;color:' + descColor + ';font-size:12.5px' + (isRangeInferred ? ';font-style:italic' : '') + '">' + pretty + (wz.season_week ? ' <span style="color:#7a8290">· Wk ' + wz.season_week + '</span>' : '') + '</span>' +
+        (isRangeInferred ? '' : (wz.region && wz.region !== 'unknown' ? '<span style="font-size:10.5px;color:#7a8290;font-family:ui-monospace,monospace;text-transform:uppercase;letter-spacing:0.05em">' + wz.region + '</span>' : ''));
+      row.dataset.searchable = (id + ' ' + (wz.region || '') + ' ' + (sid || 'unknown')).toLowerCase();
       row.addEventListener('click', function () { fire(id); });
       return row;
     }
-    ids.forEach(function (id) { list.appendChild(rowFor(id)); });
+    // Sort: confirmed first, then range-inferred by number
+    var confirmed = ids.filter(function (id) { return byId[id].confirmed_by !== 'range-inferred'; });
+    var inferred = ids.filter(function (id) { return byId[id].confirmed_by === 'range-inferred'; });
+    confirmed.forEach(function (id) { list.appendChild(rowFor(id)); });
+    if (confirmed.length && inferred.length) {
+      var sep = document.createElement('div');
+      sep.textContent = lang === 'ko' ? '↓ 접근 가능 범위 · 시즌 미확인 (기여 환영)' : '↓ Accessible range · season unconfirmed (contribute to fill in)';
+      sep.style.cssText = 'font-size:10.5px;color:#7a8290;padding:8px 12px 4px;letter-spacing:.04em;text-transform:uppercase';
+      list.appendChild(sep);
+    }
+    inferred.forEach(function (id) { list.appendChild(rowFor(id)); });
 
     search.addEventListener('input', function () {
       var q = search.value.trim().toLowerCase();
