@@ -174,6 +174,20 @@
         <h2 id="preview-heading" data-i18n="previewHeading">Landing Preview</h2>
         <p class="card-sub" data-i18n="previewSub">Visual layout of the assigned tiles around the anchor. Discord-ready PNG export ships in v1.1.</p>
 
+        <!-- Zoom + Thermal Map controls (state persisted in localStorage) -->
+        <div class="actions preview-controls" style="margin-bottom:var(--sp-3);flex-wrap:wrap;align-items:center;gap:8px">
+          <div style="display:inline-flex;gap:4px;align-items:center">
+            <span style="color:#7a8290;font-size:11px;letter-spacing:.04em;text-transform:uppercase;margin-right:4px">Zoom</span>
+            <button type="button" class="btn secondary preview-zoom-btn" data-zoom="0.3" data-i18n="zoomWorld">World</button>
+            <button type="button" class="btn secondary preview-zoom-btn" data-zoom="1.0" data-i18n="zoomR5">R5 overview</button>
+            <button type="button" class="btn secondary preview-zoom-btn" data-zoom="3.0" data-i18n="zoomArrival">Arrival</button>
+          </div>
+          <label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer;margin-left:12px;color:#a8b0c0;font-size:12px">
+            <input type="checkbox" id="thermal-toggle" style="cursor:pointer" />
+            <span data-i18n="thermalToggle">Thermal Map</span>
+          </label>
+        </div>
+
         <div class="preview-wrap">
           <canvas id="preview-canvas" width="720" height="720"></canvas>
         </div>
@@ -267,7 +281,21 @@
         lastResult: null,
         ctx: null,          // resolved LWSSeasons context
         formation: null,    // currently selected formation object
+        // Preview canvas view state (persisted in localStorage). previewZoom scales
+        // the base render scale factor; thermalOn swaps bg + adds temp badges + pulse.
+        previewZoom: 1.0,
+        thermalOn: false,
+        thermalPulseFrame: 0,   // incremented ~30fps while thermalOn — drives danger-tile opacity pulse
+        _thermalRAF: null,
+        _exporting: false,      // when true, pulse animation freezes for a clean PNG snapshot
       };
+
+      // Restore persisted view settings — safe even if localStorage is unavailable.
+      try {
+        var z = parseFloat(localStorage.getItem('lws_landing_zoom'));
+        if (isFinite(z) && z > 0) state.previewZoom = z;
+        state.thermalOn = localStorage.getItem('lws_landing_thermal') === '1';
+      } catch (e) { /* ignore */ }
 
       // ---- CSV parser (tiny; handles quoted fields, commas inside quotes) ----
       function parseCSV(text) {
@@ -373,16 +401,80 @@
         document.getElementById('export-json-btn').addEventListener('click', exportJSON);
         document.getElementById('export-share-btn').addEventListener('click', exportShareBlock);
         document.getElementById('export-png-btn').addEventListener('click', function () {
-          // v1: canvas render is the preview; downloading uses toDataURL.
+          // PNG export: freeze the pulse to the "on" (opacity 1.0) frame so the
+          // exported image is deterministic. Re-render, snapshot, then unfreeze.
           var canvas = document.getElementById('preview-canvas');
-          var url = canvas.toDataURL('image/png');
-          var a = document.createElement('a');
-          a.href = url;
-          a.download = 'landing-plan.png';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
+          state._exporting = true;
+          try {
+            if (state.lastResult) renderPreview(state.lastResult);
+            var url = canvas.toDataURL('image/png');
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'landing-plan.png';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          } finally {
+            state._exporting = false;
+            if (state.lastResult) renderPreview(state.lastResult);
+          }
         });
+
+        // ---- zoom buttons ----
+        function updateZoomButtons() {
+          var btns = document.querySelectorAll('.preview-zoom-btn');
+          btns.forEach(function (b) {
+            var z = parseFloat(b.getAttribute('data-zoom'));
+            // 'primary' style for the active preset (drop .secondary), muted for others.
+            if (Math.abs(z - state.previewZoom) < 0.001) {
+              b.classList.remove('secondary');
+              b.classList.add('active');
+            } else {
+              b.classList.add('secondary');
+              b.classList.remove('active');
+            }
+          });
+        }
+        document.querySelectorAll('.preview-zoom-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var z = parseFloat(btn.getAttribute('data-zoom'));
+            if (!isFinite(z) || z <= 0) return;
+            state.previewZoom = z;
+            try { localStorage.setItem('lws_landing_zoom', String(z)); } catch (e) {}
+            updateZoomButtons();
+            if (state.lastResult) renderPreview(state.lastResult);
+          });
+        });
+        updateZoomButtons();
+
+        // ---- thermal toggle ----
+        var thermalCb = document.getElementById('thermal-toggle');
+        thermalCb.checked = !!state.thermalOn;
+        thermalCb.addEventListener('change', function () {
+          state.thermalOn = !!thermalCb.checked;
+          try { localStorage.setItem('lws_landing_thermal', state.thermalOn ? '1' : '0'); } catch (e) {}
+          if (state.lastResult) renderPreview(state.lastResult);
+          scheduleThermalPulse();
+        });
+      }
+
+      // Drives the danger-tile pulse when Thermal Map is on. Uses requestAnimationFrame
+      // throttled to ~30fps so we don't burn CPU on a static map. When thermal is off
+      // or nothing is rendered yet, cancels the loop.
+      function scheduleThermalPulse() {
+        if (state._thermalRAF) { cancelAnimationFrame(state._thermalRAF); state._thermalRAF = null; }
+        if (!state.thermalOn || !state.lastResult) return;
+        var lastFrame = 0;
+        function tick(ts) {
+          if (!state.thermalOn || !state.lastResult) { state._thermalRAF = null; return; }
+          if (ts - lastFrame >= 33) {   // ~30fps
+            lastFrame = ts;
+            state.thermalPulseFrame++;
+            renderPreview(state.lastResult);
+          }
+          state._thermalRAF = requestAnimationFrame(tick);
+        }
+        state._thermalRAF = requestAnimationFrame(tick);
       }
 
       // ---- season-aware UI ---------------------------------------------------
@@ -758,6 +850,7 @@
             state.lastResult = data;
             renderAssignments(data);
             renderPreview(data);
+            scheduleThermalPulse();
           })
           .catch(function (e) { alert('Network error: ' + e.message); });
       }
@@ -908,9 +1001,45 @@
         var canvas = document.getElementById('preview-canvas');
         var ctx = canvas.getContext('2d');
         var W = canvas.width, H = canvas.height;
-        ctx.fillStyle = '#0a0e1a';   // shared bg from LWS palette
+        var thermal = !!state.thermalOn;
+
+        // Reserved footer height for legend + branding
+        var footerH = 60;
+        var mapY = 44, mapH = H - 44 - footerH;
+
+        // ---- Base background ----
+        // When thermal is off: solid LWS dark bg. When on: radial Polar-Storm
+        // gradient (cold blue center → warm frost outer). The map area is
+        // painted with the gradient; header + footer stay dark for legibility.
+        ctx.fillStyle = '#0a0e1a';
         ctx.fillRect(0, 0, W, H);
+        if (thermal) {
+          var gcx = W / 2, gcy = mapY + mapH / 2;
+          var grad = ctx.createRadialGradient(gcx, gcy, 0, gcx, gcy, Math.max(W, mapH) * 0.7);
+          grad.addColorStop(0.00, '#3E6E8E');   // deep polar center (Capitol -60 to -80°C)
+          grad.addColorStop(0.35, '#7FB6D3');   // glacial cyan
+          grad.addColorStop(0.65, '#B8D6E8');   // frost blue
+          grad.addColorStop(1.00, '#EAF4FA');   // ice white outer
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, mapY, W, mapH);
+        }
         if (!data) return;
+
+        // World-zoom background grid hint (very faint tile lattice at ~10% opacity)
+        // helps convey "zoomed way out" without overwhelming the marker layer.
+        if (state.previewZoom < 0.5) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(201,169,97,0.10)';
+          ctx.lineWidth = 1;
+          var step = 40;
+          for (var gx = step; gx < W; gx += step) {
+            ctx.beginPath(); ctx.moveTo(gx, mapY); ctx.lineTo(gx, mapY + mapH); ctx.stroke();
+          }
+          for (var gy = mapY + step; gy < mapY + mapH; gy += step) {
+            ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+          }
+          ctx.restore();
+        }
 
         // ---- Branded header ----
         ctx.fillStyle = '#0d1424';
@@ -927,12 +1056,10 @@
         ctx.textAlign = 'right';
         var risky = data.assignments.filter(function (a) { return a.freeze_risk !== 'safe'; }).length;
         ctx.fillText(
-          data.assignments.length + ' members · ' + (risky === 0 ? 'all safe' : risky + ' at risk'),
+          data.assignments.length + ' members · ' + (risky === 0 ? 'all safe' : risky + ' at risk') +
+          ' · ' + (thermal ? 'thermal' : 'std') + ' · ' + state.previewZoom.toFixed(1) + '×',
           W - 12, 22
         );
-
-        // Reserved footer height for legend + branding
-        var footerH = 60;
 
         // Fit the delta range into the canvas with padding (accounting for header/footer)
         var pad = 40;
@@ -940,29 +1067,52 @@
         data.assignments.forEach(function (a) {
           maxAbs = Math.max(maxAbs, Math.abs(a.delta_x), Math.abs(a.delta_y));
         });
-        var mapY = 44, mapH = H - 44 - footerH;
-        var scale = (Math.min(W, mapH) / 2 - pad) / (maxAbs + 4);
+        // Base scale fits everything at 1.0×; state.previewZoom (0.3/1.0/3.0) then
+        // shrinks or magnifies the whole layout around the anchor.
+        var baseScale = (Math.min(W, mapH) / 2 - pad) / (maxAbs + 4);
+        var scale = baseScale * state.previewZoom;
         var cx = W / 2, cy = mapY + mapH / 2;
 
-        // Furnace radius ring
-        ctx.strokeStyle = 'rgba(201, 169, 97, 0.4)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.arc(cx, cy, data.furnace_radius_tiles * scale, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        // Furnace radius ring — plain gold dashed line normally; soft orange aurora
+        // when Thermal Map is on (matches the in-game furnace-heat visual).
+        if (thermal) {
+          var rTiles = data.furnace_radius_tiles * scale;
+          var aurora = ctx.createRadialGradient(cx, cy, Math.max(0, rTiles * 0.4), cx, cy, rTiles * 1.4);
+          aurora.addColorStop(0.0, 'rgba(243,156,59,0.00)');
+          aurora.addColorStop(0.7, 'rgba(243,156,59,0.32)');
+          aurora.addColorStop(1.0, 'rgba(243,156,59,0.00)');
+          ctx.fillStyle = aurora;
+          ctx.beginPath(); ctx.arc(cx, cy, rTiles * 1.4, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = 'rgba(243,156,59,0.5)';
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(cx, cy, rTiles, 0, Math.PI * 2); ctx.stroke();
+        } else {
+          ctx.strokeStyle = 'rgba(201, 169, 97, 0.4)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.arc(cx, cy, data.furnace_radius_tiles * scale, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
 
         // Anchor marker
         ctx.fillStyle = '#c9a961';
         ctx.beginPath();
         ctx.arc(cx, cy, 5, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#7a8290';
+        ctx.fillStyle = thermal ? '#e6e8ee' : '#7a8290';
         ctx.font = '11px ui-monospace, monospace';
         ctx.textBaseline = 'alphabetic';
         ctx.textAlign = 'center';
         ctx.fillText('(' + data.anchor.x + ', ' + data.anchor.y + ')', cx, cy + 20);
+
+        // Compute pulse alpha (0.6 → 1.0 every 1.5s). Frozen at 1.0 during export.
+        var pulseAlpha = 1.0;
+        if (thermal && !state._exporting) {
+          var t = (state.thermalPulseFrame % 45) / 45;
+          pulseAlpha = 0.6 + 0.4 * (0.5 + 0.5 * Math.sin(t * Math.PI * 2));
+        }
 
         // Members with small labels
         var rankColor = {
@@ -970,24 +1120,46 @@
         };
         // Hit-test store for hover tooltip (reset every render).
         state.previewHitTest = [];
+        // Arrival zoom uses 16px squares + always-on full names, per spec.
+        var arrivalMode = state.previewZoom >= 2.5;
         data.assignments.forEach(function (a) {
           var px = cx + a.delta_x * scale;
           var py = cy + a.delta_y * scale;
           var color = rankColor[a.rank] || '#a8b0c0';
           if (a.freeze_risk === 'danger') color = '#e08a8a';
           else if (a.freeze_risk === 'warning') color = '#e0c080';
-          // Marker: slightly larger for R5/R4 (rally leaders)
-          var s = (a.rank === 'R5' || a.rank === 'R4') ? 8 : 6;
+          // Marker: 16px for Arrival zoom, else 8/6 for R5-R4/others.
+          var s = arrivalMode ? 16 : ((a.rank === 'R5' || a.rank === 'R4') ? 8 : 6);
+          ctx.save();
+          if (thermal && a.freeze_risk === 'danger') ctx.globalAlpha = pulseAlpha;
           ctx.fillStyle = color;
           ctx.fillRect(px - s / 2, py - s / 2, s, s);
+          ctx.restore();
           state.previewHitTest.push({ px: px, py: py, size: s, color: color, member: a });
-          // Small name label — only if member has enough room (avoid crowding)
-          if (data.assignments.length <= 30) {
-            ctx.fillStyle = '#a8b0c0';
-            ctx.font = '9px ui-monospace, monospace';
+
+          // Temperature badge (small 9px monospace above marker) when thermal on.
+          if (thermal && a.tile_temp_with_furnace_c != null) {
+            ctx.save();
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = '#0d1424';
+            ctx.font = '600 9px ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            var badge = a.tile_temp_with_furnace_c + '°';
+            var bw = ctx.measureText(badge).width + 6;
+            ctx.fillRect(px - bw / 2, py - s / 2 - 12, bw, 11);
+            ctx.fillStyle = '#eaf4fa';
+            ctx.fillText(badge, px, py - s / 2 - 2);
+            ctx.restore();
+          }
+
+          // Small name label — always in Arrival mode; else only when ≤30 members
+          if (arrivalMode || data.assignments.length <= 30) {
+            ctx.fillStyle = thermal ? '#0d1424' : '#a8b0c0';
+            ctx.font = (arrivalMode ? '600 10px' : '9px') + ' ui-monospace, monospace';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
-            var name = (a.name || '').slice(0, 8);
+            var name = arrivalMode ? (a.name || '') : (a.name || '').slice(0, 8);
             ctx.fillText(name, px, py + s / 2 + 2);
           }
         });
