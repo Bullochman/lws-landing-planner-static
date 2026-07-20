@@ -126,8 +126,8 @@
           <input type="file" id="csv-input" accept=".csv,text/csv" style="display:none" />
           <button type="button" class="btn secondary" id="upload-btn" data-i18n="rosterUploadBtn">Upload CSV</button>
           <select id="roster-picker" class="btn ghost" style="padding:6px 10px">
-            <option value="data/tino-alliance-94.csv" selected>RONY / TINO 티노 (94) — current</option>
-            <option value="data/r10t-alliance-99.csv">R10t Riot (99) — previous</option>
+            <option value="data/moonpetal-circle-94.csv" selected>The Moonpetal Circle (94) — demo</option>
+            <option value="data/silverwing-coven-99.csv">Silverwing Coven (99) — demo</option>
             <option value="data/example-roster.csv">Tiny example roster (7)</option>
           </select>
           <button type="button" class="btn" id="load-picker-btn">Load</button>
@@ -397,7 +397,7 @@
           loadFromUrl(sel.value);
         });
         // Auto-load RONY 94 on first visit (per user request)
-        loadFromUrl('data/tino-alliance-94.csv');
+        loadFromUrl('data/moonpetal-circle-94.csv');
 
         // Recompute the anchor summary on any anchor input change
         ['anchor-x', 'anchor-y', 'furnace-level'].forEach(function (id) {
