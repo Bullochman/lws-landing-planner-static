@@ -186,6 +186,11 @@
             <input type="checkbox" id="thermal-toggle" style="cursor:pointer" />
             <span data-i18n="thermalToggle">Thermal Map</span>
           </label>
+          <div style="display:inline-flex;gap:4px;align-items:center;margin-left:12px">
+            <span style="color:#7a8290;font-size:11px;letter-spacing:.04em;text-transform:uppercase;margin-right:4px" data-i18n="styleLabel">Style</span>
+            <button type="button" class="btn secondary preview-style-btn" data-style="schematic" data-i18n="styleSchematic">Schematic</button>
+            <button type="button" class="btn secondary preview-style-btn" data-style="realistic" data-i18n="styleRealistic">Realistic</button>
+          </div>
         </div>
 
         <div class="preview-wrap">
@@ -285,8 +290,11 @@
         // the base render scale factor; thermalOn swaps bg + adds temp badges + pulse.
         previewZoom: 1.0,
         thermalOn: false,
+        previewMode: 'realistic',  // 'schematic' (pink squares on black) or 'realistic' (Polar-Storm terrain + HQ icons)
         thermalPulseFrame: 0,   // incremented ~30fps while thermalOn — drives danger-tile opacity pulse
+        dangerPulseFrame: 0,    // incremented ~30fps in realistic mode — drives danger-tile red-outline pulse
         _thermalRAF: null,
+        _dangerRAF: null,
         _exporting: false,      // when true, pulse animation freezes for a clean PNG snapshot
       };
 
@@ -295,6 +303,8 @@
         var z = parseFloat(localStorage.getItem('lws_landing_zoom'));
         if (isFinite(z) && z > 0) state.previewZoom = z;
         state.thermalOn = localStorage.getItem('lws_landing_thermal') === '1';
+        var savedStyle = localStorage.getItem('lws_landing_style');
+        if (savedStyle === 'schematic' || savedStyle === 'realistic') state.previewMode = savedStyle;
       } catch (e) { /* ignore */ }
 
       // ---- CSV parser (tiny; handles quoted fields, commas inside quotes) ----
@@ -456,6 +466,30 @@
           if (state.lastResult) renderPreview(state.lastResult);
           scheduleThermalPulse();
         });
+
+        // ---- style toggle (schematic vs realistic) ----
+        function updateStyleButtons() {
+          document.querySelectorAll('.preview-style-btn').forEach(function (b) {
+            if (b.getAttribute('data-style') === state.previewMode) {
+              b.classList.remove('secondary'); b.classList.add('active');
+            } else {
+              b.classList.add('secondary'); b.classList.remove('active');
+            }
+          });
+        }
+        document.querySelectorAll('.preview-style-btn').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var s = btn.getAttribute('data-style');
+            if (s !== 'schematic' && s !== 'realistic') return;
+            state.previewMode = s;
+            try { localStorage.setItem('lws_landing_style', s); } catch (e) {}
+            updateStyleButtons();
+            if (state.lastResult) renderPreview(state.lastResult);
+            scheduleDangerPulse();
+          });
+        });
+        updateStyleButtons();
+        scheduleDangerPulse();
       }
 
       // Drives the danger-tile pulse when Thermal Map is on. Uses requestAnimationFrame
@@ -475,6 +509,26 @@
           state._thermalRAF = requestAnimationFrame(tick);
         }
         state._thermalRAF = requestAnimationFrame(tick);
+      }
+
+      // Realistic-mode danger-outline pulse loop. Only runs when previewMode
+      // is realistic AND at least one member has freeze_risk === 'danger'.
+      function scheduleDangerPulse() {
+        if (state._dangerRAF) { cancelAnimationFrame(state._dangerRAF); state._dangerRAF = null; }
+        if (state.previewMode !== 'realistic' || !state.lastResult) return;
+        var hasDanger = (state.lastResult.assignments || []).some(function (a) { return a.freeze_risk === 'danger'; });
+        if (!hasDanger) return;
+        var lastFrame = 0;
+        function tick(ts) {
+          if (state.previewMode !== 'realistic' || !state.lastResult) { state._dangerRAF = null; return; }
+          if (ts - lastFrame >= 33) {
+            lastFrame = ts;
+            state.dangerPulseFrame++;
+            renderPreview(state.lastResult);
+          }
+          state._dangerRAF = requestAnimationFrame(tick);
+        }
+        state._dangerRAF = requestAnimationFrame(tick);
       }
 
       // ---- season-aware UI ---------------------------------------------------
@@ -851,6 +905,7 @@
             renderAssignments(data);
             renderPreview(data);
             scheduleThermalPulse();
+            scheduleDangerPulse();
           })
           .catch(function (e) { alert('Network error: ' + e.message); });
       }
@@ -997,51 +1052,40 @@
         canvas.addEventListener('mouseleave', clear);
       }
 
+      // ------------------------------------------------------------------
+      // renderPreview dispatches to schematic or realistic. Both modes share
+      // header/scale/footer/hover-hit-test contract via helpers below so the
+      // Export PNG and hover tooltip work identically for both.
+      // ------------------------------------------------------------------
       function renderPreview(data) {
+        if (state.previewMode === 'realistic') return renderPreviewRealistic(data);
+        return renderPreviewSchematic(data);
+      }
+
+      // Shared: canvas + geometry setup, returns {ctx, W, H, mapY, mapH, footerH, cx, cy, scale, arrivalMode}
+      function _prepPreview(data) {
         var canvas = document.getElementById('preview-canvas');
         var ctx = canvas.getContext('2d');
         var W = canvas.width, H = canvas.height;
-        var thermal = !!state.thermalOn;
-
-        // Reserved footer height for legend + branding
         var footerH = 60;
         var mapY = 44, mapH = H - 44 - footerH;
+        var pad = 40;
+        var maxAbs = 30;
+        (data && data.assignments || []).forEach(function (a) {
+          maxAbs = Math.max(maxAbs, Math.abs(a.delta_x), Math.abs(a.delta_y));
+        });
+        var baseScale = (Math.min(W, mapH) / 2 - pad) / (maxAbs + 4);
+        var scale = baseScale * state.previewZoom;
+        return {
+          canvas: canvas, ctx: ctx, W: W, H: H,
+          mapY: mapY, mapH: mapH, footerH: footerH,
+          cx: W / 2, cy: mapY + mapH / 2, scale: scale,
+          arrivalMode: state.previewZoom >= 2.5,
+        };
+      }
 
-        // ---- Base background ----
-        // When thermal is off: solid LWS dark bg. When on: radial Polar-Storm
-        // gradient (cold blue center → warm frost outer). The map area is
-        // painted with the gradient; header + footer stay dark for legibility.
-        ctx.fillStyle = '#0a0e1a';
-        ctx.fillRect(0, 0, W, H);
-        if (thermal) {
-          var gcx = W / 2, gcy = mapY + mapH / 2;
-          var grad = ctx.createRadialGradient(gcx, gcy, 0, gcx, gcy, Math.max(W, mapH) * 0.7);
-          grad.addColorStop(0.00, '#3E6E8E');   // deep polar center (Capitol -60 to -80°C)
-          grad.addColorStop(0.35, '#7FB6D3');   // glacial cyan
-          grad.addColorStop(0.65, '#B8D6E8');   // frost blue
-          grad.addColorStop(1.00, '#EAF4FA');   // ice white outer
-          ctx.fillStyle = grad;
-          ctx.fillRect(0, mapY, W, mapH);
-        }
-        if (!data) return;
-
-        // World-zoom background grid hint (very faint tile lattice at ~10% opacity)
-        // helps convey "zoomed way out" without overwhelming the marker layer.
-        if (state.previewZoom < 0.5) {
-          ctx.save();
-          ctx.strokeStyle = 'rgba(201,169,97,0.10)';
-          ctx.lineWidth = 1;
-          var step = 40;
-          for (var gx = step; gx < W; gx += step) {
-            ctx.beginPath(); ctx.moveTo(gx, mapY); ctx.lineTo(gx, mapY + mapH); ctx.stroke();
-          }
-          for (var gy = mapY + step; gy < mapY + mapH; gy += step) {
-            ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
-          }
-          ctx.restore();
-        }
-
-        // ---- Branded header ----
+      // Shared: branded header row (dark strip + brand + summary stats)
+      function _drawHeader(ctx, W, data, thermal) {
         ctx.fillStyle = '#0d1424';
         ctx.fillRect(0, 0, W, 44);
         ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1;
@@ -1055,117 +1099,17 @@
         ctx.font = '400 10px system-ui, sans-serif';
         ctx.textAlign = 'right';
         var risky = data.assignments.filter(function (a) { return a.freeze_risk !== 'safe'; }).length;
+        var modeTag = state.previewMode === 'realistic' ? 'realistic' : 'schematic';
+        var thermTag = thermal ? '·thermal' : '';
         ctx.fillText(
           data.assignments.length + ' members · ' + (risky === 0 ? 'all safe' : risky + ' at risk') +
-          ' · ' + (thermal ? 'thermal' : 'std') + ' · ' + state.previewZoom.toFixed(1) + '×',
+          ' · ' + modeTag + thermTag + ' · ' + state.previewZoom.toFixed(1) + '×',
           W - 12, 22
         );
+      }
 
-        // Fit the delta range into the canvas with padding (accounting for header/footer)
-        var pad = 40;
-        var maxAbs = 30;
-        data.assignments.forEach(function (a) {
-          maxAbs = Math.max(maxAbs, Math.abs(a.delta_x), Math.abs(a.delta_y));
-        });
-        // Base scale fits everything at 1.0×; state.previewZoom (0.3/1.0/3.0) then
-        // shrinks or magnifies the whole layout around the anchor.
-        var baseScale = (Math.min(W, mapH) / 2 - pad) / (maxAbs + 4);
-        var scale = baseScale * state.previewZoom;
-        var cx = W / 2, cy = mapY + mapH / 2;
-
-        // Furnace radius ring — plain gold dashed line normally; soft orange aurora
-        // when Thermal Map is on (matches the in-game furnace-heat visual).
-        if (thermal) {
-          var rTiles = data.furnace_radius_tiles * scale;
-          var aurora = ctx.createRadialGradient(cx, cy, Math.max(0, rTiles * 0.4), cx, cy, rTiles * 1.4);
-          aurora.addColorStop(0.0, 'rgba(243,156,59,0.00)');
-          aurora.addColorStop(0.7, 'rgba(243,156,59,0.32)');
-          aurora.addColorStop(1.0, 'rgba(243,156,59,0.00)');
-          ctx.fillStyle = aurora;
-          ctx.beginPath(); ctx.arc(cx, cy, rTiles * 1.4, 0, Math.PI * 2); ctx.fill();
-          ctx.strokeStyle = 'rgba(243,156,59,0.5)';
-          ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.arc(cx, cy, rTiles, 0, Math.PI * 2); ctx.stroke();
-        } else {
-          ctx.strokeStyle = 'rgba(201, 169, 97, 0.4)';
-          ctx.lineWidth = 1;
-          ctx.setLineDash([4, 4]);
-          ctx.beginPath();
-          ctx.arc(cx, cy, data.furnace_radius_tiles * scale, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
-
-        // Anchor marker
-        ctx.fillStyle = '#c9a961';
-        ctx.beginPath();
-        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = thermal ? '#e6e8ee' : '#7a8290';
-        ctx.font = '11px ui-monospace, monospace';
-        ctx.textBaseline = 'alphabetic';
-        ctx.textAlign = 'center';
-        ctx.fillText('(' + data.anchor.x + ', ' + data.anchor.y + ')', cx, cy + 20);
-
-        // Compute pulse alpha (0.6 → 1.0 every 1.5s). Frozen at 1.0 during export.
-        var pulseAlpha = 1.0;
-        if (thermal && !state._exporting) {
-          var t = (state.thermalPulseFrame % 45) / 45;
-          pulseAlpha = 0.6 + 0.4 * (0.5 + 0.5 * Math.sin(t * Math.PI * 2));
-        }
-
-        // Members with small labels
-        var rankColor = {
-          R5: '#da8fff', R4: '#ffd07a', R3: '#00bfff', R2: '#44dd66', R1: '#6699ff'
-        };
-        // Hit-test store for hover tooltip (reset every render).
-        state.previewHitTest = [];
-        // Arrival zoom uses 16px squares + always-on full names, per spec.
-        var arrivalMode = state.previewZoom >= 2.5;
-        data.assignments.forEach(function (a) {
-          var px = cx + a.delta_x * scale;
-          var py = cy + a.delta_y * scale;
-          var color = rankColor[a.rank] || '#a8b0c0';
-          if (a.freeze_risk === 'danger') color = '#e08a8a';
-          else if (a.freeze_risk === 'warning') color = '#e0c080';
-          // Marker: 16px for Arrival zoom, else 8/6 for R5-R4/others.
-          var s = arrivalMode ? 16 : ((a.rank === 'R5' || a.rank === 'R4') ? 8 : 6);
-          ctx.save();
-          if (thermal && a.freeze_risk === 'danger') ctx.globalAlpha = pulseAlpha;
-          ctx.fillStyle = color;
-          ctx.fillRect(px - s / 2, py - s / 2, s, s);
-          ctx.restore();
-          state.previewHitTest.push({ px: px, py: py, size: s, color: color, member: a });
-
-          // Temperature badge (small 9px monospace above marker) when thermal on.
-          if (thermal && a.tile_temp_with_furnace_c != null) {
-            ctx.save();
-            ctx.globalAlpha = 0.85;
-            ctx.fillStyle = '#0d1424';
-            ctx.font = '600 9px ui-monospace, monospace';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'bottom';
-            var badge = a.tile_temp_with_furnace_c + '°';
-            var bw = ctx.measureText(badge).width + 6;
-            ctx.fillRect(px - bw / 2, py - s / 2 - 12, bw, 11);
-            ctx.fillStyle = '#eaf4fa';
-            ctx.fillText(badge, px, py - s / 2 - 2);
-            ctx.restore();
-          }
-
-          // Small name label — always in Arrival mode; else only when ≤30 members
-          if (arrivalMode || data.assignments.length <= 30) {
-            ctx.fillStyle = thermal ? '#0d1424' : '#a8b0c0';
-            ctx.font = (arrivalMode ? '600 10px' : '9px') + ' ui-monospace, monospace';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'top';
-            var name = arrivalMode ? (a.name || '') : (a.name || '').slice(0, 8);
-            ctx.fillText(name, px, py + s / 2 + 2);
-          }
-        });
-        attachPreviewHover(canvas);
-
-        // ---- Legend + footer ----
+      // Shared: legend + footer (footerH-tall band at bottom)
+      function _drawFooter(ctx, W, H, footerH, data) {
         var legY = H - footerH + 8;
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'left';
@@ -1187,8 +1131,6 @@
           ctx.fillText(item.label, legX + 12, legY);
           legX += 12 + ctx.measureText(item.label).width + 14;
         });
-
-        // Anchor + ambient info + timestamp
         ctx.fillStyle = '#7a8290';
         ctx.font = '10px ui-monospace, monospace';
         ctx.textAlign = 'left';
@@ -1199,6 +1141,393 @@
         ctx.textAlign = 'right';
         ctx.fillText('r5tools.io · ' + new Date().toISOString().slice(0, 10), W - 12, H - 26);
         ctx.textBaseline = 'alphabetic';
+      }
+
+      // Rank palette (used by both modes and the hover tooltip)
+      var RANK_COLOR = {
+        R5: '#da8fff', R4: '#ffd07a', R3: '#00bfff', R2: '#44dd66', R1: '#6699ff'
+      };
+
+      // ---------- SCHEMATIC (original pink-squares-on-black) ----------
+      function renderPreviewSchematic(data) {
+        var p = _prepPreview(data);
+        var ctx = p.ctx, W = p.W, H = p.H, mapY = p.mapY, mapH = p.mapH;
+        var thermal = !!state.thermalOn;
+
+        // Background: flat dark, or Polar-Storm gradient in thermal mode
+        ctx.fillStyle = '#0a0e1a';
+        ctx.fillRect(0, 0, W, H);
+        if (thermal) {
+          var gcx = W / 2, gcy = mapY + mapH / 2;
+          var grad = ctx.createRadialGradient(gcx, gcy, 0, gcx, gcy, Math.max(W, mapH) * 0.7);
+          grad.addColorStop(0.00, '#3E6E8E');
+          grad.addColorStop(0.35, '#7FB6D3');
+          grad.addColorStop(0.65, '#B8D6E8');
+          grad.addColorStop(1.00, '#EAF4FA');
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, mapY, W, mapH);
+        }
+        if (!data) return;
+
+        // Faint tile lattice at world zoom
+        if (state.previewZoom < 0.5) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(201,169,97,0.10)';
+          ctx.lineWidth = 1;
+          var step = 40;
+          for (var gx = step; gx < W; gx += step) {
+            ctx.beginPath(); ctx.moveTo(gx, mapY); ctx.lineTo(gx, mapY + mapH); ctx.stroke();
+          }
+          for (var gy = mapY + step; gy < mapY + mapH; gy += step) {
+            ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+          }
+          ctx.restore();
+        }
+
+        _drawHeader(ctx, W, data, thermal);
+
+        var cx = p.cx, cy = p.cy, scale = p.scale;
+
+        // Furnace radius ring
+        if (thermal) {
+          var rTiles = data.furnace_radius_tiles * scale;
+          var aurora = ctx.createRadialGradient(cx, cy, Math.max(0, rTiles * 0.4), cx, cy, rTiles * 1.4);
+          aurora.addColorStop(0.0, 'rgba(243,156,59,0.00)');
+          aurora.addColorStop(0.7, 'rgba(243,156,59,0.32)');
+          aurora.addColorStop(1.0, 'rgba(243,156,59,0.00)');
+          ctx.fillStyle = aurora;
+          ctx.beginPath(); ctx.arc(cx, cy, rTiles * 1.4, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = 'rgba(243,156,59,0.5)';
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(cx, cy, rTiles, 0, Math.PI * 2); ctx.stroke();
+        } else {
+          ctx.strokeStyle = 'rgba(201, 169, 97, 0.4)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.arc(cx, cy, data.furnace_radius_tiles * scale, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // Anchor marker (gold dot + coord)
+        ctx.fillStyle = '#c9a961';
+        ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = thermal ? '#e6e8ee' : '#7a8290';
+        ctx.font = '11px ui-monospace, monospace';
+        ctx.textBaseline = 'alphabetic';
+        ctx.textAlign = 'center';
+        ctx.fillText('(' + data.anchor.x + ', ' + data.anchor.y + ')', cx, cy + 20);
+
+        var pulseAlpha = 1.0;
+        if (thermal && !state._exporting) {
+          var t = (state.thermalPulseFrame % 45) / 45;
+          pulseAlpha = 0.6 + 0.4 * (0.5 + 0.5 * Math.sin(t * Math.PI * 2));
+        }
+
+        state.previewHitTest = [];
+        var arrivalMode = p.arrivalMode;
+        data.assignments.forEach(function (a) {
+          var px = cx + a.delta_x * scale;
+          var py = cy + a.delta_y * scale;
+          var color = RANK_COLOR[a.rank] || '#a8b0c0';
+          if (a.freeze_risk === 'danger') color = '#e08a8a';
+          else if (a.freeze_risk === 'warning') color = '#e0c080';
+          var s = arrivalMode ? 16 : ((a.rank === 'R5' || a.rank === 'R4') ? 8 : 6);
+          ctx.save();
+          if (thermal && a.freeze_risk === 'danger') ctx.globalAlpha = pulseAlpha;
+          ctx.fillStyle = color;
+          ctx.fillRect(px - s / 2, py - s / 2, s, s);
+          ctx.restore();
+          state.previewHitTest.push({ px: px, py: py, size: s, color: color, member: a });
+
+          if (thermal && a.tile_temp_with_furnace_c != null) {
+            ctx.save();
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = '#0d1424';
+            ctx.font = '600 9px ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            var badge = a.tile_temp_with_furnace_c + '°';
+            var bw = ctx.measureText(badge).width + 6;
+            ctx.fillRect(px - bw / 2, py - s / 2 - 12, bw, 11);
+            ctx.fillStyle = '#eaf4fa';
+            ctx.fillText(badge, px, py - s / 2 - 2);
+            ctx.restore();
+          }
+
+          if (arrivalMode || data.assignments.length <= 30) {
+            ctx.fillStyle = thermal ? '#0d1424' : '#a8b0c0';
+            ctx.font = (arrivalMode ? '600 10px' : '9px') + ' ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            var name = arrivalMode ? (a.name || '') : (a.name || '').slice(0, 8);
+            ctx.fillText(name, px, py + s / 2 + 2);
+          }
+        });
+        attachPreviewHover(p.canvas);
+
+        _drawFooter(ctx, W, H, p.footerH, data);
+      }
+
+      // ---------- REALISTIC (Polar-Storm terrain + HQ icons) ----------
+      // Renders a scene that reads as "just teleported into Season 2 Polar
+      // Storm": frost-blue radial terrain, snowflake sprinkles, HQ 2x2 icons
+      // colored by rank, aurora furnace glow, anchor as pentagon+crown, and
+      // compass-point coord labels around the furnace radius.
+      function renderPreviewRealistic(data) {
+        var p = _prepPreview(data);
+        var ctx = p.ctx, W = p.W, H = p.H, mapY = p.mapY, mapH = p.mapH;
+        var thermal = !!state.thermalOn;
+
+        // ---- Background: radial gradient deep polar center → frost outer ----
+        ctx.fillStyle = '#0a0e1a';
+        ctx.fillRect(0, 0, W, H);
+        var gcx = p.cx, gcy = p.cy;
+        var gRadius = Math.max(W, mapH) * 0.72;
+        var terrain = ctx.createRadialGradient(gcx, gcy, 0, gcx, gcy, gRadius);
+        terrain.addColorStop(0.00, '#1E3A5F');
+        terrain.addColorStop(0.35, '#3E6E8E');
+        terrain.addColorStop(0.65, '#7FB6D3');
+        terrain.addColorStop(1.00, '#B8D6E8');
+        ctx.fillStyle = terrain;
+        ctx.fillRect(0, mapY, W, mapH);
+
+        // Snowflake sprinkles
+        _drawSnowflakes(ctx, W, mapY, mapH);
+
+        if (!data) { _drawHeader(ctx, W, { assignments: [] }, thermal); _drawFooter(ctx, W, H, p.footerH, { anchor: { x: 0, y: 0, ambient_c: 0 }, furnace_radius_tiles: 0 }); return; }
+
+        _drawHeader(ctx, W, data, thermal);
+
+        var cx = p.cx, cy = p.cy, scale = p.scale;
+        var rTiles = data.furnace_radius_tiles * scale;
+
+        // Aurora furnace glow
+        var glow = ctx.createRadialGradient(cx, cy, Math.max(0, rTiles * 0.15), cx, cy, rTiles * 1.5);
+        glow.addColorStop(0.0, 'rgba(243,156,59,0.55)');
+        glow.addColorStop(0.55, 'rgba(243,156,59,0.28)');
+        glow.addColorStop(1.0, 'rgba(243,156,59,0.00)');
+        ctx.fillStyle = glow;
+        ctx.beginPath(); ctx.arc(cx, cy, rTiles * 1.5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(243,156,59,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(cx, cy, rTiles, 0, Math.PI * 2); ctx.stroke();
+
+        // Compass-point coord labels around furnace radius
+        var ax = data.anchor.x, ay = data.anchor.y, rt = data.furnace_radius_tiles;
+        var compass = [
+          { dx:  0, dy: -1, label: '(' + ax + ', ' + (ay - rt) + ')' },
+          { dx:  1, dy:  0, label: '(' + (ax + rt) + ', ' + ay + ')' },
+          { dx:  0, dy:  1, label: '(' + ax + ', ' + (ay + rt) + ')' },
+          { dx: -1, dy:  0, label: '(' + (ax - rt) + ', ' + ay + ')' },
+        ];
+        ctx.font = '600 10px ui-monospace, monospace';
+        ctx.textBaseline = 'middle';
+        compass.forEach(function (c) {
+          var lx = cx + c.dx * (rTiles + 14);
+          var ly = cy + c.dy * (rTiles + 14);
+          ctx.textAlign = c.dx === 0 ? 'center' : (c.dx > 0 ? 'left' : 'right');
+          var tw = ctx.measureText(c.label).width + 8;
+          var chipX = ctx.textAlign === 'left' ? lx - 2 : (ctx.textAlign === 'right' ? lx - tw + 2 : lx - tw / 2);
+          ctx.save();
+          ctx.globalAlpha = 0.55;
+          ctx.fillStyle = '#0d1424';
+          ctx.fillRect(chipX, ly - 7, tw, 14);
+          ctx.restore();
+          ctx.fillStyle = 'rgba(234,244,250,0.95)';
+          ctx.fillText(c.label, lx, ly);
+        });
+
+        // Anchor: pentagon-house with golden crown
+        _drawAnchorIcon(ctx, cx, cy, 12);
+
+        // Member HQ icons
+        state.previewHitTest = [];
+        var arrivalMode = p.arrivalMode;
+        var baseIcon = arrivalMode ? 18 : ((state.previewZoom < 0.5) ? 8 : 12);
+
+        var dangerT = 0;
+        if (!state._exporting) {
+          dangerT = 0.5 + 0.5 * Math.sin(((state.dangerPulseFrame % 45) / 45) * Math.PI * 2);
+        }
+
+        data.assignments.forEach(function (a) {
+          var px = cx + a.delta_x * scale;
+          var py = cy + a.delta_y * scale;
+          var color = RANK_COLOR[a.rank] || '#a8b0c0';
+          var s = baseIcon;
+          // Rank-tint underglow
+          ctx.save();
+          ctx.globalAlpha = 0.35;
+          var underGlow = ctx.createRadialGradient(px, py, 0, px, py, s);
+          underGlow.addColorStop(0, color);
+          underGlow.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = underGlow;
+          ctx.beginPath(); ctx.arc(px, py, s, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+          _drawHQIcon(ctx, px, py, s, color);
+          if (a.freeze_risk === 'danger') {
+            var ringR = s * 0.85 + dangerT * 4;
+            var ringAlpha = 0.55 + dangerT * 0.35;
+            ctx.save();
+            ctx.strokeStyle = 'rgba(214,69,69,' + ringAlpha.toFixed(3) + ')';
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(px, py, ringR, 0, Math.PI * 2); ctx.stroke();
+            ctx.restore();
+          } else if (a.freeze_risk === 'warning') {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(224,192,128,0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.arc(px, py, s * 0.85, 0, Math.PI * 2); ctx.stroke();
+            ctx.restore();
+          }
+          state.previewHitTest.push({ px: px, py: py, size: s, color: color, member: a });
+
+          if (thermal && a.tile_temp_with_furnace_c != null) {
+            ctx.save();
+            ctx.globalAlpha = 0.9;
+            ctx.fillStyle = '#0d1424';
+            ctx.font = '600 9px ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            var badge = a.tile_temp_with_furnace_c + '°';
+            var bw = ctx.measureText(badge).width + 6;
+            ctx.fillRect(px - bw / 2, py - s - 12, bw, 11);
+            ctx.fillStyle = '#eaf4fa';
+            ctx.fillText(badge, px, py - s - 2);
+            ctx.restore();
+          }
+
+          if (arrivalMode || data.assignments.length <= 30) {
+            ctx.save();
+            ctx.font = (arrivalMode ? '600 10px' : '9px') + ' ui-monospace, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            var name = arrivalMode ? (a.name || '') : (a.name || '').slice(0, 8);
+            if (name) {
+              var nw = ctx.measureText(name).width + 6;
+              ctx.globalAlpha = 0.65;
+              ctx.fillStyle = '#0d1424';
+              ctx.fillRect(px - nw / 2, py + s + 2, nw, arrivalMode ? 14 : 12);
+              ctx.globalAlpha = 1;
+              ctx.fillStyle = '#eaf4fa';
+              ctx.fillText(name, px, py + s + 3);
+            }
+            ctx.restore();
+          }
+        });
+
+        attachPreviewHover(p.canvas);
+
+        _drawFooter(ctx, W, H, p.footerH, data);
+      }
+
+      // -------- realistic-mode primitive helpers --------
+      function _drawSnowflakes(ctx, W, mapY, mapH) {
+        ctx.save();
+        var seed = 1337;
+        function rand() { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; }
+        var n = 55;
+        for (var i = 0; i < n; i++) {
+          var x = rand() * W;
+          var y = mapY + rand() * mapH;
+          var r = 1 + rand() * 1.6;
+          var a = 0.10 + rand() * 0.22;
+          ctx.globalAlpha = a;
+          ctx.fillStyle = '#EAF4FA';
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, Math.PI * 2);
+          ctx.fill();
+          if (rand() > 0.75) {
+            ctx.strokeStyle = 'rgba(234,244,250,' + (a * 0.9).toFixed(3) + ')';
+            ctx.lineWidth = 0.75;
+            var L = r * 2.2;
+            ctx.beginPath();
+            ctx.moveTo(x - L, y); ctx.lineTo(x + L, y);
+            ctx.moveTo(x, y - L); ctx.lineTo(x, y + L);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+
+      function _drawHQIcon(ctx, px, py, s, color) {
+        var w = s, h = s;
+        var x = px - w / 2, y = py - h / 2;
+        var r = Math.max(1, s * 0.15);
+        ctx.save();
+        ctx.beginPath();
+        _roundRect(ctx, x, y, w, h, r);
+        var g = ctx.createLinearGradient(0, y, 0, y + h);
+        g.addColorStop(0, _mix(color, '#ffffff', 0.35));
+        g.addColorStop(1, _mix(color, '#000000', 0.35));
+        ctx.fillStyle = g;
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = _mix(color, '#000000', 0.55);
+        ctx.stroke();
+        var rh = Math.max(2, s * 0.28);
+        ctx.beginPath();
+        ctx.moveTo(x + w * 0.15, y + rh * 0.4);
+        ctx.lineTo(px, y - rh * 0.6);
+        ctx.lineTo(x + w * 0.85, y + rh * 0.4);
+        ctx.closePath();
+        ctx.fillStyle = _mix(color, '#ffffff', 0.55);
+        ctx.fill();
+        ctx.strokeStyle = _mix(color, '#000000', 0.35);
+        ctx.stroke();
+        ctx.beginPath();
+        _roundRect(ctx, x + 1, y + 1, w * 0.4, h * 0.4, r * 0.7);
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function _drawAnchorIcon(ctx, cx, cy, s) {
+        _drawHQIcon(ctx, cx, cy, s * 1.6, '#F39C3B');
+        ctx.save();
+        ctx.fillStyle = '#F7D046';
+        ctx.strokeStyle = '#8a6b1c';
+        ctx.lineWidth = 1;
+        var cw = s * 1.4;
+        var cy2 = cy - s * 1.4;
+        ctx.beginPath();
+        ctx.moveTo(cx - cw / 2, cy2);
+        ctx.lineTo(cx - cw / 4, cy2 - cw * 0.35);
+        ctx.lineTo(cx, cy2);
+        ctx.lineTo(cx + cw / 4, cy2 - cw * 0.35);
+        ctx.lineTo(cx + cw / 2, cy2);
+        ctx.lineTo(cx + cw / 2, cy2 + cw * 0.18);
+        ctx.lineTo(cx - cw / 2, cy2 + cw * 0.18);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function _roundRect(ctx, x, y, w, h, r) {
+        r = Math.min(r, w / 2, h / 2);
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+      }
+      function _mix(a, b, t) {
+        function h2r(h) {
+          if (!h || h[0] !== '#') return [200, 200, 200];
+          return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+        }
+        function r2h(r) {
+          return '#' + r.map(function (n) { var s = Math.round(Math.max(0, Math.min(255, n))).toString(16); return s.length === 1 ? '0' + s : s; }).join('');
+        }
+        var A = h2r(a), B = h2r(b);
+        return r2h([A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t]);
       }
 
       // ---- exports ----
