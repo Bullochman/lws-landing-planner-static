@@ -84,6 +84,15 @@
       exportJsonBtn:       'Export JSON',
       exportShareBtn:      'Copy Discord share block',
 
+      // Preview controls (zoom presets + thermal overlay + style picker)
+      zoomWorld:           'World',
+      zoomR5:              'R5 overview',
+      zoomArrival:         'Arrival',
+      thermalToggle:       'Thermal Map',
+      styleLabel:          'Style',
+      styleSchematic:      'Schematic',
+      styleRealistic:      'Realistic',
+
       // Warnings + status
       warnTitle:           'Data caveats',
       warnFurnaceRadius:   'Alliance Furnace tile radius is a KB gap (open question #1). The safe zone shown here uses a placeholder value; verify in-game before locking a plan.',
@@ -256,6 +265,15 @@
       exportCsvBtn:        'CSV 내보내기',
       exportJsonBtn:       'JSON 내보내기',
       exportShareBtn:      'Discord 공유 블록 복사',
+
+      // Preview controls (zoom presets + thermal overlay + style picker)
+      zoomWorld:           '세계 줌',
+      zoomR5:              'R5 줌',
+      zoomArrival:         '도착 줌',
+      thermalToggle:       '열 지도',
+      styleLabel:          '스타일',
+      styleSchematic:      '개략도',
+      styleRealistic:      '사실적',
 
       // Warnings + status
       warnTitle:           '데이터 유의사항',
